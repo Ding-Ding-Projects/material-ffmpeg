@@ -1929,8 +1929,91 @@ $('#theme-toggle').onclick=()=>{state.theme=state.theme==='dark'?'light':'dark';
 $('#copy-command').onclick=()=>navigator.clipboard.writeText($('#live-command').textContent).then(()=>notify('Copied','Command preview copied.')).catch((error)=>notify('Copy failed',error.message,'error'));
 $$('.title-actions [data-window]').forEach((button)=>button.onclick=()=>window.api?.window?.[button.dataset.window]?.());
 document.addEventListener('click',(event)=>{if(event.target.closest('#tab-list'))openTabManager();if(event.target.closest('#tab-add')){const current=Object.values(GROUPS).flatMap((group)=>group.items).find((item)=>item[0]===state.view);if(current&&!state.tabs.some((tab)=>tab.id===state.view)){state.tabs.push({id:state.view,label:current[2],icon:current[1],pinned:false,group:GROUPS[groupFor(state.view)].title});render();}}});
-document.addEventListener('contextmenu',(event)=>{const tab=event.target.closest('.tab');if(!tab)return;event.preventDefault();const id=tab.dataset.tabId,item=state.tabs.find((entry)=>entry.id===id),menu=$('#ctx-menu');menu.replaceChildren();const header=document.createElement('header');header.textContent=item?.label||'Tab';menu.append(header);[['Pin or unpin',()=>{item.pinned=!item.pinned;render();}],['Duplicate',()=>{if(!state.tabs.some((entry)=>entry.id===`${id}-copy`))state.tabs.push({...item,id:`${id}-copy`,view:item.view||item.id,label:`${item.label} copy`,pinned:false});render();}],['Move to group',openTabManager],['Edit appearance',()=>openAppearance(item.label)],['Close',()=>{if(!item.pinned){state.tabs=state.tabs.filter((entry)=>entry!==item);render();}}]].forEach(([label,run])=>{const button=document.createElement('button');button.textContent=label;button.onclick=()=>{menu.hidden=true;run();};menu.append(button);});menu.hidden=false;menu.style.left=`${Math.min(event.clientX,innerWidth-250)}px`;menu.style.top=`${Math.min(event.clientY,innerHeight-220)}px`;});
-document.addEventListener('click',(event)=>{if(!event.target.closest('#ctx-menu'))$('#ctx-menu').hidden=true;});
+let tabContextMenuActions = [];
+function closeTabContextMenu() {
+  const menu = $('#ctx-menu');
+  menu.hidden = true;
+  tabContextMenuActions = [];
+}
+function openArchiveContextMenu(event, title, actions) {
+  event.preventDefault();
+  event.stopPropagation();
+  const menu = $('#ctx-menu');
+  tabContextMenuActions = actions;
+  menu.replaceChildren();
+  const header = document.createElement('header');
+  header.textContent = title || 'Element';
+  menu.append(header);
+  tabContextMenuActions.forEach((action, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.dataset.contextAction = String(index);
+    button.textContent = action.label;
+    menu.append(button);
+  });
+  menu.hidden = false;
+  menu.style.left = `${Math.max(0, event.clientX)}px`;
+  menu.style.top = `${Math.max(0, event.clientY)}px`;
+  requestAnimationFrame(() => menu.dispatchEvent(new CustomEvent('archive-context-menu-opened')));
+}
+document.addEventListener('contextmenu', (event) => {
+  const tab = event.target.closest('.tab');
+  if (tab) {
+    const id = tab.dataset.tabId;
+    const item = state.tabs.find((entry) => entry.id === id);
+    if (!item) return;
+    return openArchiveContextMenu(event, item.label, [
+      { label: 'Pin or unpin', run: () => { item.pinned = !item.pinned; render(); } },
+      { label: 'Duplicate', run: () => { if (!state.tabs.some((entry) => entry.id === `${id}-copy`)) state.tabs.push({ ...item, id: `${id}-copy`, view: item.view || item.id, label: `${item.label} copy`, pinned: false }); render(); } },
+      { label: 'Move to group', run: openTabManager }, { label: 'Edit appearance', run: () => openAppearance(item.label) },
+      { label: 'Close', run: () => { if (!item.pinned) { state.tabs = state.tabs.filter((entry) => entry !== item); render(); } } }
+    ]);
+  }
+  const registryRow = event.target.closest('.registry-row');
+  if (registryRow) {
+    const index = Number(registryRow.dataset.catalogIndex);
+    const title = registryRow.querySelector('b')?.textContent || 'Registry entry';
+    return openArchiveContextMenu(event, title, [
+      { label: 'Open option details', run: () => Number.isInteger(index) && openCatalogHelp(CATALOG_KINDS[state.view], index) },
+      { label: 'Copy name', run: () => navigator.clipboard.writeText(title).catch(() => notify('Copy failed', 'The registry name could not be copied.', 'error')) },
+      { label: 'Edit appearance', run: () => openAppearance(title) }
+    ]);
+  }
+  const jobRow = event.target.closest('.job-row');
+  if (jobRow) {
+    const id = jobRow.dataset.jobId;
+    const job = state.jobs.find((entry) => entry.id === id);
+    if (!job) return;
+    return openArchiveContextMenu(event, displayText(job.label, 'job'), [
+      { label: 'Open job log', run: () => { state.selectedJobId = job.id; go('jobs'); } },
+      { label: 'Move queued job to back', run: () => { if (job.status === 'queued') { state.selectedJobs = new Set([job.id]); moveSelectedToBack(); } } },
+      { label: 'Edit appearance', run: () => openAppearance(displayText(job.label, 'job')) }
+    ]);
+  }
+  const host = event.target.closest('button,label,h1,h2,h3,pre,input,select,.card,.list-item') || event.target;
+  const title = ((host.innerText || host.value || host.tagName || 'Element').trim().split('\n')[0] || 'Element').slice(0, 42);
+  openArchiveContextMenu(event, title, [{ label: 'Edit appearance', run: () => openAppearance(title) }]);
+});
+$('#ctx-menu').addEventListener('pointerdown', (event) => event.stopPropagation());
+$('#ctx-menu').addEventListener('click', (event) => {
+  const button = event.target.closest('button[data-context-action]');
+  if (!button) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const action = tabContextMenuActions[Number(button.dataset.contextAction)];
+  closeTabContextMenu();
+  action?.run();
+});
+document.addEventListener('pointerdown', (event) => {
+  if (!event.target.closest('#ctx-menu')) closeTabContextMenu();
+});
+window.addEventListener('resize', closeTabContextMenu);
+$('#ctx-menu').addEventListener('archive-context-menu-opened', () => {
+  const menu = $('#ctx-menu');
+  const bounds = menu.getBoundingClientRect();
+  menu.style.left = `${Math.max(0, Math.min(bounds.left, innerWidth - bounds.width))}px`;
+  menu.style.top = `${Math.max(0, Math.min(bounds.top, innerHeight - bounds.height))}px`;
+});
 $$('.builder-button').forEach((button)=>button.onclick=(event)=>{event.preventDefault();openRegex();});
 $('#appearance-apply').onclick=(event)=>{event.preventDefault();state.theme=$('#appearance-theme').value;state.settings.appearance={accent:$('#appearance-accent').value,font:$('#appearance-font').value,scale:Number($('#appearance-scale').value),weight:Number($('#appearance-weight').value),radius:Number($('#appearance-radius').value)};saveUi();$('#appearance-dialog').close();render();};
 $('#appearance-reset').onclick=()=>{delete state.settings.appearance;saveUi();applyAppearance();$('#appearance-dialog').close();render();};

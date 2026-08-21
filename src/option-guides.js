@@ -577,7 +577,8 @@
     inp.onclick = (e) => e.stopPropagation();
     const rxb = $g('.ctx-rx', ctx); if (rxb) rxb.onclick = (e) => { e.stopPropagation(); ctx.hidden = true; window.openRegex && window.openRegex(); };
     inp.oninput = null;
-    inp.oninput = () => { const q = inp.value.toLowerCase(); ctx.querySelectorAll('button').forEach((b) => { b.style.display = b.textContent.toLowerCase().includes(q) ? '' : 'none'; }); };
+    inp.oninput = () => { const q = inp.value.toLowerCase(); ctx.querySelectorAll('button[data-context-action]').forEach((b) => { b.style.display = b.textContent.toLowerCase().includes(q) ? '' : 'none'; }); };
+    requestAnimationFrame(() => ctx.dispatchEvent(new CustomEvent('archive-context-menu-opened')));
   }).observe(ctx, { childList: true, attributes: true, attributeFilter: ['hidden'] });
 
   // ---- draggable dialogs (regex builder and friends) ----

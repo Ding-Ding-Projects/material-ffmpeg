@@ -3,6 +3,7 @@ param([switch]$Silent)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'hash.ps1')
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $outputRoot = Join-Path $repoRoot 'dist\squirrel-windows'
 $releaseRoot = Join-Path $repoRoot 'dist\release-assets'
@@ -45,7 +46,7 @@ Copy-Item -LiteralPath $setup.FullName -Destination $releaseRoot
 Copy-Item -LiteralPath $releases.FullName -Destination $releaseRoot
 Copy-Item -LiteralPath $fullPackage.FullName -Destination $releaseRoot
 $assets = Get-ChildItem -LiteralPath $releaseRoot -File | Sort-Object Name
-$checksums = $assets | ForEach-Object { "{0}  {1}" -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name }
+$checksums = $assets | ForEach-Object { "{0}  {1}" -f (Get-FileSha256 -LiteralPath $_.FullName), $_.Name }
 Set-Content -LiteralPath (Join-Path $releaseRoot 'SHA256SUMS.txt') -Value $checksums -Encoding Ascii
 Write-Host "[release] Verified unsigned Squirrel assets: $releaseRoot"
 $assets | ForEach-Object { Write-Host "[release] $($_.Name) ($($_.Length) bytes)" }

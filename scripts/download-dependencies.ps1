@@ -3,6 +3,7 @@ param([switch]$Silent)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'hash.ps1')
 $started = Get-Date
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
@@ -14,7 +15,7 @@ if (-not (Test-Path -LiteralPath $npm -PathType Leaf)) { throw "npm.cmd is missi
 Write-Host '[dependencies] Phase 2/3: restoring exact npm dependencies from package-lock.json.'
 $lockPath = Join-Path $repoRoot 'package-lock.json'
 if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) { throw "package-lock.json is missing: $lockPath" }
-$lockHash = (Get-FileHash -LiteralPath $lockPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$lockHash = Get-FileSha256 -LiteralPath $lockPath
 $marker = Join-Path $repoRoot '.cache\npm-package-lock.sha256'
 $currentMarker = if (Test-Path -LiteralPath $marker) { (Get-Content -LiteralPath $marker -Raw).Trim() } else { '' }
 $electronPackage = Join-Path $repoRoot 'node_modules\electron\package.json'

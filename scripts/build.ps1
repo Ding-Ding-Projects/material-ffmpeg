@@ -3,6 +3,7 @@ param([switch]$Silent)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'hash.ps1')
 $started = Get-Date
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 
@@ -32,7 +33,7 @@ if ($missing) { throw "Runnable package is incomplete. Missing: $($missing -join
 $commit = (& git -C $repoRoot rev-parse HEAD).Trim()
 $metadata = Get-Content -LiteralPath (Join-Path $packageRoot 'resources\build-metadata.json') -Raw | ConvertFrom-Json
 if ($metadata.commit -ne $commit) { throw "Runnable package commit mismatch. Expected $commit, got $($metadata.commit)." }
-$hash = (Get-FileHash -LiteralPath $executable -Algorithm SHA256).Hash.ToLowerInvariant()
+$hash = Get-FileSha256 -LiteralPath $executable
 $elapsed = (Get-Date) - $started
 Write-Host "[build] Ready: $executable"
 Write-Host "[build] SHA-256: $hash"

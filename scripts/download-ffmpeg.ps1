@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'hash.ps1')
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $manifestPath = Join-Path $repoRoot 'dependencies.json'
@@ -28,7 +29,7 @@ function Get-Manifest {
 }
 
 function Get-Sha256([string]$Path) {
-  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+  return Get-FileSha256 -LiteralPath $Path
 }
 
 function Ensure-Directory([string]$Path) {

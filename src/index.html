@@ -2,16 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>material-ffmpeg</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;600&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..600,0..1,0" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="titlebar">
     <button class="brand-mark" id="logo-open" title="Customize app logo">M</button>
-    <div class="title">material-ffmpeg <span>FFmpeg control plane · 8.0</span></div>
+    <div class="title">material-ffmpeg <span>FFmpeg GUI</span></div>
     <div class="title-actions">
       <button id="theme-toggle" title="Toggle light / dark"><span class="ms" style="font-size:20px">light_mode</span></button>
       <button id="notification-open" title="Notification centre" style="color:var(--accent)"><span class="ms" style="font-size:20px">notifications</span></button>
@@ -72,7 +70,7 @@
     <div class="two-col">
       <label class="field">Theme<select id="appearance-theme"><option value="dark">Dark</option><option value="light">Light</option></select></label>
       <label class="field">Accent color<input id="appearance-accent" type="color" value="#82d5cc" style="height:41px;padding:4px"></label>
-      <label class="field">Font family<select id="appearance-font"><option>Google Sans</option><option>Roboto</option><option>Roboto Mono</option></select></label>
+      <label class="field">Font family<select id="appearance-font"><option>Segoe UI</option><option>Arial</option><option>Consolas</option></select></label>
       <label class="field">Corner radius <input id="appearance-radius" type="range" min="8" max="32" value="16"></label>
       <label class="field">Font scale <input id="appearance-scale" type="range" min="0.9" max="1.3" step="0.05" value="1"></label>
       <label class="field">Font weight <input id="appearance-weight" type="range" min="300" max="700" step="100" value="400"></label>
@@ -118,6 +116,7 @@
   </form></dialog>
 
   <div id="ctx-menu" class="ctx-menu" hidden role="menu"></div>
+  <script src="ui/command-builders.js"></script>
   <script src="renderer.js"></script>
   <script src="option-guides.js"></script>
 </body>

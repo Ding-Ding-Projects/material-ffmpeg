@@ -1,687 +1,553 @@
-/* material-ffmpeg renderer — vanilla, no bundler. Mirrors the design source of truth. */
+/* material-ffmpeg renderer — runtime state only; this process never executes a shell. */
 'use strict';
-const $ = (s, r = document) => r.querySelector(s);
-const $$ = (s, r = document) => [...r.querySelectorAll(s)];
-const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+const $ = (selector, root = document) => root.querySelector(selector);
+const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selector));
+const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const bounded = (value, max = 500) => String(value ?? '').slice(0, max);
+const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0));
 const store = {
-  get: (k, d) => { try { return JSON.parse(localStorage.getItem('mffmpeg.' + k)) ?? d; } catch { return d; } },
-  set: (k, v) => localStorage.setItem('mffmpeg.' + k, JSON.stringify(v)),
+  get(key, fallback) { try { return JSON.parse(localStorage.getItem(`material-ffmpeg.${key}`)) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem(`material-ffmpeg.${key}`, JSON.stringify(value)); } catch { } }
 };
 
-const state = Object.assign({
-  view: 'overview', theme: 'dark', logo: 'M',
-  crf: 20, crfMax: 28, lookahead: 40, tune: 'film', x264Preset: 'medium', fpsIdx: 3,
-  fontColor: '#f2e9d8', textAlpha: 0.9, lufsI: -16, lra: 11, tp: -1.5,
-  gifFps: 15, gifColors: 128, nvencCq: 23, nvencPreset: 'p5', hlsTime: 6, hlsList: 6,
-  selNode: 'drawtext', bools: {}, vocab: null,
-}, store.get('state', {}));
-const save = () => store.set('state', state);
+const DEFAULT_TABS = [
+  { id: 'overview', label: 'Overview', icon: 'dashboard', pinned: true, group: 'Home' },
+  { id: 'convert', label: 'Convert', icon: 'sync_alt', pinned: false, group: 'Media' },
+  { id: 'filters', label: 'Filtergraph', icon: 'account_tree', pinned: false, group: 'Media' },
+  { id: 'jobs', label: 'Jobs & logs', icon: 'receipt_long', pinned: false, group: 'Home' }
+];
 
-/* ---------- data ---------- */
+const state = {
+  view: 'overview', theme: store.get('theme', 'dark'), logo: store.get('logo', { glyph: 'M', image: '' }),
+  runtime: { available: false, loading: true, version: '', error: '' }, runtimeCatalog: {},
+  jobs: [], selectedJobs: new Set(), selectedJobId: '', catalogs: {}, catalogErrors: {}, catalogLoading: {},
+  inputs: {}, outputs: {}, probe: null, probeError: '', audioStreams: [],
+  filters: store.get('filters', [{ name: 'scale', options: '1920:-2' }]), selectedFilter: 0,
+  presets: store.get('presets', []), converterFiles: [], tabs: store.get('tabs', DEFAULT_TABS),
+  notifications: store.get('notifications', []),
+  settings: Object.assign({ parallel: 2, preferHardware: true, keepPassLogs: false, notifyComplete: true }, store.get('settings', {})),
+  loudnormPending: {},
+  form: Object.assign({
+    codec: 'libx264', container: 'mp4', crf: 20, preset: 'medium', tune: 'none', width: 1920, height: -2, fps: '',
+    trimStart: '00:00:00.000', trimEnd: '', trimMode: 'copy', avoidNegative: true,
+    loudness: -16, lra: 11, truePeak: -1.5, audioCodec: 'flac', audioStream: '0:a:0',
+    gifFps: 15, gifWidth: 640, gifColors: 128, thumbInterval: 10,
+    streamMode: 'hls', streamTarget: '', hlsTime: 6, hlsList: 6,
+    composerArgs: '-c:v\nlibx264\n-c:a\naac', converterTarget: 'mp4'
+  }, store.get('form', {}))
+};
+
+const saveUi = () => {
+  store.set('theme', state.theme); store.set('logo', state.logo); store.set('tabs', state.tabs);
+  store.set('presets', state.presets); store.set('filters', state.filters);
+  store.set('settings', state.settings); store.set('form', state.form);
+};
+
 const GROUPS = {
   overview: { title: 'Home', items: [['overview', 'dashboard', 'Overview'], ['jobs', 'receipt_long', 'Jobs & logs'], ['settings', 'settings', 'Settings']] },
   media: { title: 'Media', items: [['convert', 'sync_alt', 'Convert'], ['trim', 'content_cut', 'Trim & clip'], ['filters', 'account_tree', 'Filtergraph'], ['audio', 'graphic_eq', 'Audio'], ['gif', 'gif_box', 'GIF & thumbs'], ['presets', 'bookmarks', 'Presets'], ['inspector', 'search_insights', 'Inspector']] },
-  registry: { title: 'Registry', items: [['codecs', 'memory', 'Codecs', '718'], ['formats', 'folder_zip', 'Formats', '402'], ['protocols', 'lan', 'Protocols', '58'], ['bsf', 'swap_horiz', 'Bitstream filters', '44'], ['devices', 'videocam', 'Devices', '12'], ['matrix', 'grid_on', 'Capability matrix']] },
-  system: { title: 'System', items: [['hwaccel', 'developer_board', 'Hardware accel'], ['streaming', 'podcasts', 'Streaming'], ['composer', 'terminal', 'Composer'], ['converter', 'published_with_changes', 'File converter']] },
+  registry: { title: 'Registry', items: [['codecs', 'memory', 'Codecs'], ['formats', 'folder_zip', 'Formats'], ['protocols', 'lan', 'Protocols'], ['bsf', 'swap_horiz', 'Bitstream filters'], ['devices', 'videocam', 'Devices'], ['matrix', 'grid_on', 'Capability matrix']] },
+  system: { title: 'System', items: [['hwaccel', 'developer_board', 'Hardware accel'], ['streaming', 'podcasts', 'Streaming'], ['composer', 'terminal', 'Composer'], ['converter', 'published_with_changes', 'File converter']] }
 };
 const RAIL = [['overview', 'dashboard', 'Home'], ['media', 'movie', 'Media'], ['registry', 'database', 'Registry'], ['system', 'developer_board', 'System']];
-const viewGroup = (v) => Object.keys(GROUPS).find((g) => GROUPS[g].items.some((i) => i[0] === v)) || 'overview';
+const CATALOG_KINDS = { codecs: 'codecs', formats: 'formats', protocols: 'protocols', bsf: 'bsfs', devices: 'devices' };
+const groupFor = (view) => Object.keys(GROUPS).find((key) => GROUPS[key].items.some((item) => item[0] === view)) || 'overview';
 
-const X264_PRESETS = ['ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow', 'placebo'];
-const FPS_LIST = ['23.976 (24000/1001)', '24/1', '25/1', '29.97 (30000/1001)', '30/1', '50/1', '59.94 (60000/1001)', '60/1'];
-const X264_BOOLS = [
-  ['mbtree', 'Use macroblock tree ratecontrol.', true], ['psy', 'Use psychovisual optimizations.', true],
-  ['mixed-refs', 'One reference per partition, not per macroblock', true], ['8x8dct', 'High profile 8x8 transform.', true],
-  ['fast-pskip', 'Early skip detection on P-frames', true], ['weightb', 'Weighted prediction for B-frames.', true],
-  ['intra-refresh', 'Periodic Intra Refresh instead of IDR frames.', false], ['bluray-compat', 'Bluray compatibility workarounds.', false],
-  ['aud', 'Use access unit delimiters.', false], ['ssim', 'Calculate and print SSIM stats.', false],
-  ['fastfirstpass', 'Use fast settings when encoding first pass', true], ['forced-idr', 'Force keyframes as IDR frames.', false],
-];
-const JOBS = [
-  ['sync_alt', 'interview_final.mp4', 'libx264 crf 20 · scale 1920:-2 · loudnorm', 'ENCODING', '87.4 fps · 3.6×', 62, 'pause'],
-  ['podcasts', 'hls ladder — ep04/', '3 renditions · hls_time 6 · fmp4', 'ENCODING', '1.2× realtime', 31, 'pause'],
-  ['graphic_eq', 'podcast_ep12.flac', 'loudnorm I=-16 TP=-1.5 · two-pass', 'DONE', '41.8×', 100, 'folder_open'],
-  ['gif_box', 'teaser_loop.gif', 'palettegen/paletteuse · fps 15 · 128 colors', 'QUEUED', 'waiting', 0, 'play_arrow'],
-];
-const REGISTRY = {
-  codecs: ['Codecs — 718 of 718', 'Every codec compiled into this build, from libavcodec/allcodecs.c.', 'Search 718 codecs', ['All', 'Video', 'Audio', 'Subtitle', 'Encoders', 'Decoders', 'Hardware'], [
-    ['libx264', 'H.264 / AVC via x264 — the reference software encoder', 'VIDEO·ENCODER'], ['h264_nvenc', 'NVIDIA NVENC H.264 hardware encoder', 'VIDEO·HW'],
-    ['libx265', 'H.265 / HEVC via x265', 'VIDEO·ENCODER'], ['libsvtav1', 'AV1 via SVT-AV1', 'VIDEO·ENCODER'],
-    ['libvpx-vp9', 'VP9 via libvpx', 'VIDEO·ENCODER'], ['prores_ks', 'Apple ProRes encoder (Kostya)', 'VIDEO·ENCODER'],
-    ['aac', 'Native AAC-LC encoder/decoder', 'AUDIO·BOTH'], ['libopus', 'Opus via libopus', 'AUDIO·ENCODER'],
-    ['flac', 'FLAC lossless', 'AUDIO·BOTH'], ['pcm_s24le', 'PCM signed 24-bit little-endian', 'AUDIO·BOTH'],
-    ['ass', 'ASS / SSA subtitles', 'SUBTITLE·BOTH'], ['mjpeg', 'Motion JPEG', 'VIDEO·BOTH']]],
-  formats: ['Formats — 402 muxers/demuxers', 'Container formats from libavformat; each muxer exposes its private AVOption set.', 'Search 402 formats', ['All', 'Muxers', 'Demuxers', 'Streaming', 'Image'], [
-    ['mp4 / mov', 'ISO Base Media — faststart, fragmentation, edit lists', 'MUX·DEMUX'], ['matroska', 'MKV — attachments, chapters, any codec', 'MUX·DEMUX'],
-    ['mpegts', 'MPEG transport stream — broadcast & HLS segments', 'MUX·DEMUX'], ['hls', 'Apple HTTP Live Streaming muxer', 'MUX'],
-    ['dash', 'MPEG-DASH segmenter', 'MUX'], ['webm', 'WebM (VP8/VP9/AV1 + Opus/Vorbis)', 'MUX·DEMUX'],
-    ['flv', 'Flash Video — RTMP payload', 'MUX·DEMUX'], ['wav', 'RIFF WAVE audio', 'MUX·DEMUX'],
-    ['image2', 'Image sequence (%04d patterns)', 'MUX·DEMUX'], ['gif', 'Animated GIF muxer', 'MUX']]],
-  protocols: ['Protocols — 58 of 58', 'I/O protocols from libavformat: every URL scheme ffmpeg can read or write.', 'Search 58 protocols', ['All', 'Input', 'Output', 'Network', 'Crypto'], [
-    ['file', 'Local file access', 'IN·OUT'], ['pipe', 'stdin/stdout piping', 'IN·OUT'],
-    ['http / https', 'HTTP with cookies, headers, reconnect options', 'IN·OUT'], ['rtmp', 'Real-Time Messaging Protocol', 'IN·OUT'],
-    ['srt', 'Secure Reliable Transport — latency, passphrase', 'IN·OUT'], ['rtsp', 'RTSP with TCP/UDP transport selection', 'IN·OUT'],
-    ['udp', 'Raw UDP with buffer/ttl options', 'IN·OUT'], ['tcp', 'Raw TCP', 'IN·OUT'],
-    ['crypto', 'AES-encrypted stream reading', 'IN'], ['concat', 'Virtual concatenation of inputs', 'IN']]],
-  bsf: ['Bitstream filters — 44 of 44', 'Packet-level transforms from libavcodec — no re-encode required.', 'Search 44 bitstream filters', ['All', 'H.264/5', 'Metadata', 'Repair'], [
-    ['h264_mp4toannexb', 'Convert AVCC to Annex B start codes (for mpegts)', 'H264'], ['hevc_mp4toannexb', 'Same conversion for HEVC', 'HEVC'],
-    ['extract_extradata', 'Pull parameter sets from packets', 'META'], ['av1_metadata', 'Edit AV1 sequence header fields', 'AV1·META'],
-    ['h264_metadata', 'Edit SPS fields: SAR, level, colors', 'H264·META'], ['setts', 'Rewrite packet timestamps with expressions', 'META'],
-    ['noise', 'Corrupt packets deliberately (testing)', 'REPAIR'], ['filter_units', 'Drop/pass NAL unit types', 'H264·HEVC']]],
-  devices: ['Devices — 12 of 12', 'Capture and playback devices from libavdevice, as detected on this machine.', 'Search 12 devices', ['All', 'Video in', 'Audio in', 'Output'], [
-    ['dshow', 'DirectShow — Logitech BRIO, Elgato HD60 X detected', 'VIDEO·AUDIO'], ['gdigrab', 'Windows GDI screen capture', 'VIDEO'],
-    ['ddagrab', 'Desktop Duplication API capture (D3D11)', 'VIDEO·HW'], ['wasapi', 'Windows audio session capture', 'AUDIO'],
-    ['lavfi', 'Libavfilter virtual input device', 'VIRTUAL'], ['sdl2', 'SDL2 output window', 'OUTPUT']]],
-  matrix: ['Capability matrix', 'Which encoder works in which container, with hardware pathways.', 'Search matrix', ['All', 'mp4', 'mkv', 'webm', 'mpegts'], [
-    ['libx264 → mp4', 'Universal playback; faststart recommended', 'OK'], ['libx265 → mp4', 'hvc1 tag needed for Apple', 'OK·TAG'],
-    ['libsvtav1 → mp4', 'AV1 in ISOBMFF — modern players only', 'OK'], ['libvpx-vp9 → webm', 'The canonical WebM pairing', 'OK'],
-    ['prores_ks → mov', 'Edit-friendly intermediate', 'OK'], ['h264_nvenc → mpegts', 'Broadcast/HLS segments, Annex B', 'OK·BSF'],
-    ['libopus → mp4', 'Supported since 2016 spec update', 'CAUTION'], ['flac → mp4', 'Experimental flag required', 'EXPERIMENTAL']]],
+const apiCall = async (path, ...args) => {
+  let target = window.api;
+  for (const segment of path.split('.')) target = target?.[segment];
+  if (typeof target !== 'function') throw new Error(`Runtime API unavailable: ${path}`);
+  return target(...args);
 };
-const NOTIFS = store.get('notifs', [
-  ['Job finished — podcast_ep12.flac', 'loudnorm two-pass completed at 41.8× realtime.', 'today 14:22'],
-  ['NVENC session limit reached', '3rd parallel encode fell back to libx264.', 'today 13:05'],
-  ['Preset saved — YouTube 4K master', 'Available in Presets and the command palette.', 'yesterday 19:44'],
-]);
 
-const liveCommand = () => `ffmpeg -hwaccel cuda -i interview_cam_A.mov -vf "scale=1920:-2:flags=bicubic,drawtext=text='EP 04 — ROUGH CUT':fontcolor=${state.fontColor}@${state.textAlpha}:x=(w-text_w)/2:y=h-line_h-24" -c:v libx264 -preset ${state.x264Preset} -tune ${state.tune} -crf ${state.crf} -rc-lookahead ${state.lookahead} -af loudnorm=I=${state.lufsI}:LRA=${state.lra}:TP=${state.tp} -c:a aac -b:a 256k -movflags +faststart interview_final.mp4`;
-
-/* ---------- shared partials ---------- */
-const slider = (id, label, val, min, max, step, unit = '') => `
-  <div><div class="slider-head"><span>${esc(label)}</span><b>${esc(val)}${unit}</b></div>
-  <input type="range" id="${id}" min="${min}" max="${max}" step="${step || 1}" value="${val}"></div>`;
-const field = (label, inner) => `<label class="field">${esc(label)}${inner}</label>`;
-const sel = (opts, selIdx = 0) => `<select>${opts.map((o, i) => `<option${i === selIdx ? ' selected' : ''}>${esc(o)}</option>`).join('')}</select>`;
-const searchLine = (ph) => `<div class="search-line"><input placeholder="${esc(ph)}"><button class="builder-button" data-builder="x">.*</button></div>`;
-const jobRows = (bulk) => JOBS.map(([icon, name, cmd, st, meta, pct, act]) => `
-  <div class="list-item" style="display:block">
-    <div style="display:flex;gap:10px;align-items:center">
-      ${bulk ? `<input type="checkbox" class="job-sel" data-name="${esc(name)}"${(state.jobSel || {})[name] ? ' checked' : ''} title="Select for bulk actions">` : ''}
-      ${(state.locks || {})[name] ? '<span class="ms" title="Locked (toy lock) — right-click to unlock" style="font-size:16px;color:var(--danger)">lock</span>' : ''}
-      <span class="ms">${icon}</span>
-      <span style="flex:1;min-width:0"><b style="font-size:13px">${esc(name)}</b><br><small class="mono">${esc(cmd)}</small></span>
-      <span class="tag${st === 'ENCODING' ? '' : ' idle'}">${st}</span>
-      <b class="mono" style="font-size:12px;color:var(--muted)">${esc(meta)}</b>
-      <button title="${act}" style="background:var(--surface3);width:34px;height:34px;border-radius:50%"><span class="ms" style="font-size:17px">${act}</span></button>
-    </div>
-    <div class="progress-track"><span style="width:${pct}%"></span></div>
-  </div>`).join('');
-
-/* ---------- views ---------- */
-const VIEWS = {
-  overview: () => `
-    <div class="page-head"><div><p class="eyebrow">Media control plane</p><h1>Overview</h1><p class="lede" style="margin:0">Every codec, filter, muxer, protocol, and device in this build is inspectable and configurable here — no terminal required.</p></div>
-    <div class="head-actions"><button class="filled" data-go="convert"><span class="ms" style="font-size:18px">add</span>New job</button><button class="tonal" data-go="composer">Command composer</button></div></div>
-    <div class="grid">
-      ${[['Codecs in build', '718', '451 encoders · 267 hw paths'], ['Filters', '458', 'libavfilter · 214 video · 176 audio'], ['Muxers / demuxers', '402', '58 protocols · 44 bitstream filters'], ['Queue', '2 + 2', 'encoding + waiting · 3.6× avg speed']].map(([l, v, s]) => `
-        <div class="card span3"><div style="display:flex;justify-content:space-between;align-items:center"><span style="color:var(--muted);font-size:12px;font-weight:500">${l}</span><button data-appearance="${l}" title="Edit appearance" style="color:var(--muted)"><span class="ms" style="font-size:15px">palette</span></button></div><div class="stat">${v}</div><small style="color:var(--muted)">${s}</small></div>`).join('')}
-      <div class="card span8"><div style="display:flex;justify-content:space-between;margin-bottom:14px"><h2 style="margin:0">Active queue</h2><button class="tonal" style="padding:6px 14px;font-size:12.5px" data-go="jobs">All jobs</button></div><div class="list">${jobRows()}</div></div>
-      <div class="span4" style="display:grid;gap:14px;align-content:start">
-        <div class="card"><h3>Quick actions</h3><div class="list">
-          ${[['sync_alt', 'Convert a file', 'convert'], ['content_cut', 'Trim without re-encode', 'trim'], ['graphic_eq', 'Normalize loudness', 'audio'], ['search_insights', 'Inspect media (ffprobe)', 'inspector']].map(([i, l, v]) => `<button class="list-item" data-go="${v}" style="width:100%;text-align:left;font-size:13px"><span class="ms">${i}</span>${l}</button>`).join('')}
-        </div></div>
-        <div class="card"><h3>Personal vocabulary</h3><p class="hint" style="margin-bottom:10px">Load a local vocabulary JSON to rename surfaces in your own words. Stays private and on this machine.</p>
-        <label class="upload-slot"><span class="ms" style="font-size:18px">upload_file</span>Upload vocabulary JSON<input type="file" class="vocab-upload" accept="application/json" hidden></label></div>
-      </div>
-    </div>`,
-
-  convert: () => `
-    <div class="page-head"><div><p class="eyebrow">Transcode</p><h1>Convert — libx264</h1><p class="lede" style="margin:0">Every encoder option from libavcodec/libx264.c as a typed control.</p></div>
-    <div class="head-actions"><button class="outlined">Save as preset</button><button class="filled" data-go="jobs"><span class="ms" style="font-size:18px">play_arrow</span>Queue job</button></div></div>
-    <div class="grid">
-      <div class="span7" style="display:grid;gap:14px;align-content:start">
-        <div class="card"><h2>Rate control</h2><p class="hint">CRF is constant-quality; QP is constant-quantizer. Setting a bitrate switches x264 to ABR/VBV.</p>
-          <div style="display:grid;gap:16px">
-            ${slider('crf', 'crf — Select the quality for constant quality mode', state.crf, 0, 51)}
-            <div class="slider-scale"><span>0 lossless</span><span>18 visually lossless</span><span>23 default</span><span>51 worst</span></div>
-            <div class="two-col">${slider('crfMax', 'crf_max — VBV quality floor', state.crfMax, 0, 51)}${slider('lookahead', 'rc-lookahead — frames', state.lookahead, 0, 250)}</div>
-          </div></div>
-        <div class="card"><h2>Preset · tune · profile</h2><p class="hint">preset — “Set the encoding preset (cf. x264 --fullhelp)”.</p>
-          <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:16px">${X264_PRESETS.map((p) => `<button class="chip-btn${p === state.x264Preset ? ' active' : ''}" data-x264preset="${p}">${p}</button>`).join('')}</div>
-          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
-            ${field('tune — content hint', `<select id="tune">${['none', 'film', 'animation', 'grain', 'stillimage', 'fastdecode', 'zerolatency', 'psnr', 'ssim'].map((t) => `<option${t === state.tune ? ' selected' : ''}>${t}</option>`).join('')}</select>`)}
-            ${field('profile — restriction set', sel(['auto', 'baseline', 'main', 'high', 'high10', 'high444'], 3))}
-            ${field('level — Annex A level', sel(['auto', '3.1', '4.0', '4.1', '5.1', '6.2'], 3))}
-          </div></div>
-        <div class="card"><h2>Analysis &amp; psychovisual</h2><p class="hint">Toggles map 1:1 to AVOption booleans; hover any control for the source description.</p>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 18px">
-            ${X264_BOOLS.map(([n, d, def]) => `<label class="check-row" title="${esc(d)}"><input type="checkbox" data-bool="${n}"${(state.bools[n] ?? def) ? ' checked' : ''}><span style="flex:1;min-width:0"><b>${n}</b><br><small>${esc(d)}</small></span></label>`).join('')}
-          </div>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:14px">
-            ${field('aq-mode — AQ method', sel(['none', 'variance — complexity mask', 'autovariance', 'autovariance-biased — dark scenes'], 1))}
-            ${field('motion-est — estimation method', sel(['dia', 'hex', 'umh', 'esa', 'tesa'], 1))}
-            ${field('b-pyramid — B refs', sel(['none', 'strict — Blu-ray', 'normal — non-strict'], 2))}
-            ${field('weightp — weighted P', sel(['none', 'simple', 'smart'], 2))}
-            ${field('coder — entropy coder', sel(['default', 'cavlc / vlc', 'cabac / ac'], 2))}
-            ${field('nal-hrd — HRD signaling', sel(['none', 'vbr', 'cbr — requires vbv-bufsize'], 0))}
-          </div></div>
-      </div>
-      <div class="span5" style="display:grid;gap:14px;align-content:start">
-        <div class="card"><h2>Input → output</h2>
-          <div class="list" style="margin:12px 0">
-            <div class="list-item"><span class="ms">movie</span><span style="flex:1;min-width:0"><b style="font-size:13px">interview_cam_A.mov</b><br><small class="mono">ProRes 422 HQ · 3840×2160 · 23.976 · 12:41 · 42.1 GB</small></span><button id="pick-input" class="tonal" style="padding:5px 12px;font-size:11.5px">Change</button></div>
-            <div class="list-item"><span class="ms">output</span><span style="flex:1"><b style="font-size:13px">interview_final.mp4</b><br><small class="mono">H.264 High · mp4 · faststart</small></span></div>
-          </div>
-          <h3>scale — output size</h3>
-          <div class="two-col">
-            ${field('w × h (−1/−2 keep aspect)', '<div style="display:flex;gap:6px"><input value="1920" class="mono"><input value="-2" class="mono"></div>')}
-            <div class="field"><span>fps — rational stepper</span><div style="display:flex;gap:4px;align-items:center"><button id="fps-down" class="builder-button" style="min-width:34px;height:38px">−</button><b class="mono" style="flex:1;text-align:center;font-size:13px" id="fps-val">${FPS_LIST[state.fpsIdx]}</b><button id="fps-up" class="builder-button" style="min-width:34px;height:38px">+</button></div></div>
-            ${field('flags — scaler algorithm', sel(['fast_bilinear', 'bilinear', 'bicubic', 'lanczos', 'spline', 'neighbor'], 2))}
-            ${field('force_original_aspect_ratio', sel(['disable', 'decrease', 'increase'], 0))}
-          </div></div>
-        <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h2 style="margin:0">Live command</h2><button class="tonal" style="padding:6px 14px;font-size:12px" id="copy-command-2">Copy</button></div>
-        <pre class="cmd-pre" id="cmd-pre">${esc(liveCommand())}</pre></div>
-      </div>
-    </div>`,
-
-  trim: () => `
-    <p class="eyebrow">Cut without re-encoding</p><h1>Trim &amp; clip</h1><p class="lede">-ss / -to with stream copy, or frame-accurate re-encode. Drag the handles or type exact timecodes.</p>
-    <div class="view-search"><input placeholder="Search chapters & markers" style="background:var(--surface2);border:1px solid var(--line);border-radius:20px;color:var(--text);padding:10px 16px;width:280px"><button class="builder-button" data-builder="x">.*</button></div>
-    <div class="card">
-      <div style="height:180px;border-radius:12px;background:repeating-linear-gradient(90deg,var(--surface2) 0 46px,var(--surface3) 46px 48px);position:relative;overflow:hidden">
-        <div style="position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-family:var(--mono);font-size:12px">video preview — interview_cam_A.mov</div>
-        <div style="position:absolute;top:0;bottom:0;left:18%;right:34%;background:color-mix(in oklab,var(--accent) 14%,transparent);border-left:3px solid var(--accent);border-right:3px solid var(--accent)"></div>
-      </div>
-      <div style="display:flex;gap:14px;align-items:end;margin-top:16px;flex-wrap:wrap">
-        ${field('In point (-ss)', '<input value="00:02:17.083" class="mono" style="width:150px">')}
-        ${field('Out point (-to)', '<input value="00:08:22.541" class="mono" style="width:150px">')}
-        <div class="field"><span>Mode</span><div class="seg"><button class="active">Stream copy (-c copy)</button><button>Frame-accurate re-encode</button></div></div>
-        <label class="check-row" style="background:transparent"><input type="checkbox" checked> -avoid_negative_ts make_zero</label>
-        <span style="flex:1"></span><button class="filled">Queue trim</button>
-      </div>
-      <p class="mono" style="margin:14px 0 0;font-size:11.5px;color:var(--muted)">ffmpeg -ss 00:02:17.083 -to 00:08:22.541 -i interview_cam_A.mov -c copy -avoid_negative_ts make_zero clip_01.mov</p>
-    </div>`,
-
-  filters: () => `
-    <div class="page-head"><div><p class="eyebrow">Filtergraph</p><h1>Node graph</h1><p class="lede" style="margin:0">All 458 filters are droppable nodes. Select a node to edit its full AVOption set.</p></div>
-    <div class="head-actions">${searchLine('Search 458 filters')}<button class="filled">Apply graph</button></div></div>
-    <div style="display:grid;grid-template-columns:1fr 380px;gap:14px">
-      <div class="card graph">
-        <div style="display:flex;gap:26px;align-items:center;flex-wrap:wrap">
-          ${[['[0:v] in', '3840×2160 · yuv422p10le'], ['scale', '1920:-2 bicubic'], ['eq', 'contrast 1.04 · sat 1.1'], ['drawtext', 'EP 04 — ROUGH CUT'], ['[out]', 'yuv420p → libx264']].map(([n, s], i) => `
-            <button class="node${n === state.selNode ? ' sel' : ''}" data-node="${esc(n)}"><b style="${n === state.selNode ? 'color:var(--accent)' : ''}">${esc(n)}</b><br><small>${esc(s)}</small></button>${i < 4 ? '<span class="ms" style="color:var(--accent);font-size:22px">east</span>' : ''}`).join('')}
-        </div>
-        <div style="position:absolute;left:20px;bottom:16px;right:20px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-          <small style="color:var(--muted);font-weight:600">Drop a filter:</small>
-          ${['scale', 'crop', 'eq', 'curves', 'hue', 'unsharp', 'drawtext', 'overlay', 'fps', 'loudnorm', 'atempo', 'deband'].map((f) => `<span class="tag mono" style="cursor:grab">${f}</span>`).join('')}
-        </div>
-      </div>
-      <div style="display:grid;gap:14px;align-content:start">
-        <div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><h2 class="mono" style="margin:0">drawtext</h2><span class="tag">VIDEO · libfreetype</span></div>
-          <p class="hint" style="margin-top:6px">Draw text on top of video using libfreetype. Every option below is a live AVOption.</p>
-          <div style="display:grid;gap:12px">
-            ${field('text — set text', '<input value="EP 04 — ROUGH CUT">')}
-            <div class="two-col">${field('font — Font name', sel(['Sans', 'Roboto', 'Mono']))}${field('fontsize — expr ok', '<input value="h/18" class="mono">')}</div>
-            <div><p class="field" style="margin:0 0 6px">fontcolor — foreground color (any RGBA)</p>
-              <div style="display:flex;gap:6px;align-items:center">
-                <input type="color" id="fontcolor" value="${state.fontColor}" style="width:44px;height:36px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);padding:3px">
-                <b class="mono" style="font-size:12px;flex:1" id="fontcolor-val">${state.fontColor}@${state.textAlpha}</b>
-                ${['#f2e9d8', '#ffffff', '#ffc953', '#82d5cc', '#101010'].map((h) => `<button data-swatch="${h}" style="width:24px;height:24px;border-radius:50%;border:2px solid var(--line);background:${h}"></button>`).join('')}
-              </div>
-              ${slider('textAlpha', 'alpha — apply alpha while rendering', state.textAlpha, 0, 1, 0.05)}
-            </div>
-            <div class="two-col">${field('x — position expr', '<input value="(w-text_w)/2" class="mono">')}${field('y — position expr', '<input value="h-line_h-24" class="mono">')}</div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <label class="check-row"><input type="checkbox" checked> box</label>
-              <label class="check-row"><input type="checkbox"> fix_bounds</label>
-              <label class="check-row"><input type="checkbox" checked> text_shaping</label>
-            </div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
-              ${field('borderw', '<input type="number" value="2">')}${field('shadowx', '<input type="number" value="1">')}${field('shadowy', '<input type="number" value="1">')}
-            </div>
-          </div></div>
-        <div class="card"><h2 class="mono">curves — master</h2><p class="hint">Drag points to shape the tone curve; exported as x/y anchor pairs.</p>
-          <svg viewBox="0 0 300 160" style="width:100%;border-radius:12px;background:var(--surface2)">
-            <line x1="0" y1="160" x2="300" y2="0" stroke="var(--line)" stroke-dasharray="4 4"/>
-            <polyline points="0,160 75,118 150,72 225,30 300,0" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
-            <circle cx="75" cy="118" r="6" fill="var(--accent)"/><circle cx="150" cy="72" r="6" fill="var(--accent)"/><circle cx="225" cy="30" r="6" fill="var(--accent)"/>
-          </svg>
-          <p class="mono" style="margin:8px 0 0;font-size:11px;color:var(--muted)">curves=master='0/0 0.25/0.26 0.5/0.55 0.75/0.81 1/1'</p></div>
-      </div>
-    </div>`,
-
-  audio: () => `
-    <p class="eyebrow">Audio</p><h1>Extraction &amp; loudness</h1><p class="lede">EBU R128 two-pass normalization via loudnorm, plus stream extraction to any audio codec.</p>
-    <div class="view-search"><input placeholder="Search 176 audio filters" style="background:var(--surface2);border:1px solid var(--line);border-radius:20px;color:var(--text);padding:10px 16px;width:280px"><button class="builder-button" data-builder="x">.*</button></div>
-    <div class="grid">
-      <div class="card span6"><div style="display:flex;justify-content:space-between;align-items:center"><h2 class="mono" style="margin:0">loudnorm</h2><span class="tag">AUDIO · EBU R128</span></div>
-        <div style="display:grid;gap:14px;margin-top:16px">
-          ${slider('lufsI', 'I — integrated loudness target', state.lufsI, -70, -5, 1, ' LUFS')}
-          <div class="slider-scale"><span>-70</span><span>-24 EBU</span><span>-16 podcast</span><span>-14 streaming</span><span>-5</span></div>
-          ${slider('lra', 'LRA — loudness range target', state.lra, 1, 50, 1, ' LU')}
-          ${slider('tp', 'TP — maximum true peak', state.tp, -9, 0, 0.1, ' dBTP')}
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <label class="check-row"><input type="checkbox" checked> linear — normalize linearly if possible</label>
-            <label class="check-row"><input type="checkbox"> dual_mono</label>
-          </div>
-          <div class="notice"><b style="font-size:12.5px">Pass 1 measured values</b> <small style="color:var(--muted)">— auto-filled into measured_*</small>
-            <div class="mono" style="display:flex;gap:14px;margin-top:8px;font-size:12px"><span>I <b style="color:var(--accent)">-19.2</b></span><span>LRA <b style="color:var(--accent)">11.4</b></span><span>TP <b style="color:var(--accent)">-0.3</b></span><span>thresh <b style="color:var(--accent)">-29.5</b></span></div></div>
-          <button class="filled" style="justify-self:start">Run two-pass normalize</button>
-        </div></div>
-      <div class="span6" style="display:grid;gap:14px;align-content:start">
-        <div class="card"><h2>Extract streams</h2><div class="list">
-          ${[['0:1', 'Boom mic', 'pcm_s24le · 48 kHz · stereo', true], ['0:2', 'Lav pair', 'pcm_s24le · 48 kHz · stereo', true], ['0:3', 'Room tone', 'pcm_s24le · 48 kHz · mono', false]].map(([id, n, m, on]) => `
-          <label class="list-item"><input type="checkbox"${on ? ' checked' : ''}><span style="flex:1"><b class="mono" style="font-size:13px">${id}</b> <b style="font-size:13px">${n}</b><br><small class="mono">${m}</small></span>
-          <select style="background:var(--surface3);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:7px 9px;font-size:12px"><option>copy</option><option>flac</option><option selected>aac 256k</option><option>libopus 128k</option><option>pcm_s24le</option></select></label>`).join('')}
-        </div></div>
-        <div class="card"><h2 class="mono">Channel EQ — superequalizer</h2>
-          <div style="display:flex;gap:8px;align-items:end;height:110px;padding-top:6px">
-            ${[['31', 38], ['62', 52], ['125', 66], ['250', 58], ['500', 47], ['1k', 55], ['2k', 70], ['4k', 62], ['8k', 44], ['16k', 30]].map(([f, h]) => `<div style="flex:1;display:grid;gap:5px;text-align:center;height:100%;align-content:end"><div style="height:${h}px;background:var(--accent);opacity:.85;border-radius:4px"></div><small class="mono" style="font-size:9.5px;color:var(--muted)">${f}</small></div>`).join('')}
-          </div></div>
-      </div>
-    </div>`,
-
-  gif: () => `
-    <p class="eyebrow">Stills &amp; loops</p><h1>GIF &amp; thumbnails</h1><p class="lede">Two-pass palettegen → paletteuse for dither-correct GIFs; thumbnail grid export via the select filter.</p>
-    <div class="view-search"><input placeholder="Search palette & dither options" style="background:var(--surface2);border:1px solid var(--line);border-radius:20px;color:var(--text);padding:10px 16px;width:280px"><button class="builder-button" data-builder="x">.*</button></div>
-    <div class="grid">
-      <div class="card span6"><h2>GIF export</h2><div style="display:grid;gap:14px">
-        ${slider('gifFps', 'fps', state.gifFps, 5, 30)}
-        ${slider('gifColors', 'palettegen max_colors', state.gifColors, 4, 256)}
-        ${field('paletteuse dither', sel(['none', 'sierra2_4a', 'bayer:bayer_scale=2', 'floyd_steinberg', 'heckbert'], 1))}
-        ${field('palettegen stats_mode', sel(['full — whole clip', 'diff — moving areas only', 'single — per frame'], 0))}
-        <button class="filled" style="justify-self:start">Render GIF</button></div></div>
-      <div class="card span6"><h2>Thumbnail grid</h2>
-        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px">
-          ${['00:00', '01:00', '02:00', '03:00', '04:00', '05:00', '06:00', '07:00'].map((t) => `<div style="aspect-ratio:16/9;border-radius:8px;background:repeating-linear-gradient(135deg,var(--surface2) 0 8px,var(--surface3) 8px 16px);display:grid;place-items:end start;padding:5px"><small class="mono" style="font-size:9.5px;color:var(--accent);background:var(--titlebg);border-radius:5px;padding:1px 5px">${t}</small></div>`).join('')}
-        </div>
-        <div style="display:flex;gap:12px;margin-top:14px;align-items:end">
-          ${field('Interval', sel(['Every I-frame', 'Every 60 s', 'thumbnail filter (best of 100)'], 1))}
-          <button class="tonal">Export PNGs</button>
-        </div></div>
-    </div>`,
-
-  presets: () => `
-    <div class="page-head"><div><p class="eyebrow">Reusable recipes</p><h1>Presets</h1></div><div class="head-actions">${searchLine('Search presets')}</div></div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px">
-      ${[['smart_display', 'WEB', 'YouTube 4K master', 'libx264 slow · crf 18 · aac 256k · faststart', '-c:v libx264 -preset slow -crf 18 -c:a aac -b:a 256k -movflags +faststart'],
-        ['podcasts', 'AUDIO', 'Podcast loudness', 'loudnorm two-pass to -16 LUFS · mp3 V0', '-af loudnorm=I=-16:TP=-1.5:LRA=11 -c:a libmp3lame -q:a 0'],
-        ['phone_iphone', 'SOCIAL', 'Vertical 9:16 clip', 'crop + scale 1080×1920 · libx264 fast', '-vf crop=ih*9/16:ih,scale=1080:1920 -c:v libx264 -crf 21'],
-        ['movie_edit', 'EDIT', 'ProRes proxy', 'prores_ks profile 0 · 960w · pcm audio', '-c:v prores_ks -profile:v 0 -vf scale=960:-2 -c:a pcm_s16le'],
-        ['podcasts', 'LIVE', 'HLS event ladder', '3 renditions · hls_time 6 · independent segments', '-f hls -hls_time 6 -hls_flags independent_segments'],
-        ['gif_box', 'LOOP', 'Dither-perfect GIF', 'palettegen/paletteuse · sierra2_4a · fps 15', '-vf fps=15,scale=480:-1,split[a][b];[a]palettegen[p];[b][p]paletteuse']]
-        .map(([i, tg, n, d, c]) => `<div class="card"><div style="display:flex;justify-content:space-between;align-items:start"><span class="ms" style="font-size:22px;color:var(--accent)">${i}</span><span class="tag">${tg}</span></div>
-        <h3 style="margin:10px 0 4px">${n}</h3><p class="hint" style="margin-bottom:10px;font-size:12px">${d}</p>
-        <p class="mono" style="margin:0 0 12px;font-size:10.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(c)}</p>
-        <div style="display:flex;gap:6px"><button class="tonal" style="padding:7px 14px;font-size:12px">Use</button><button class="outlined" style="padding:7px 14px;font-size:12px">Edit</button><button class="danger-open" style="color:var(--danger);font-size:12px;padding:7px 10px">Delete</button></div></div>`).join('')}
-    </div>`,
-
-  inspector: () => `
-    <p class="eyebrow">ffprobe</p><h1>Media inspector</h1><p class="lede">Full container, stream, and frame-level metadata for any file. Export as JSON / CSV / XML.</p>
-    <div class="view-search"><input placeholder="Search stream & format fields" style="background:var(--surface2);border:1px solid var(--line);border-radius:20px;color:var(--text);padding:10px 16px;width:280px"><button class="builder-button" data-builder="x">.*</button></div>
-    <div class="grid">
-      <div class="card span6"><h2 class="mono">interview_cam_A.mov</h2><div class="list">
-        ${[['movie', '0:0', 'prores (HQ)', 'VIDEO', '3840×2160 · yuv422p10le · 23.976 fps · 471 Mb/s · bt709'], ['graphic_eq', '0:1', 'pcm_s24le', 'AUDIO', '48000 Hz · stereo · 2304 kb/s · boom mic'], ['graphic_eq', '0:2', 'pcm_s24le', 'AUDIO', '48000 Hz · stereo · 2304 kb/s · lav pair'], ['schedule', '0:3', 'timecode', 'DATA', 'tmcd · start 01:00:00:00']].map(([i, id, c, t, m]) => `
-        <div class="list-item" style="display:block"><div style="display:flex;gap:10px;align-items:center"><span class="ms">${i}</span><b class="mono" style="font-size:12.5px">${id}</b><b style="font-size:13px">${c}</b><span style="flex:1"></span><span class="tag">${t}</span></div><small class="mono" style="display:block;margin-top:5px">${m}</small></div>`).join('')}
-      </div></div>
-      <div class="card span6"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><h2 style="margin:0">Container</h2><div style="display:flex;gap:6px"><button class="tonal" style="padding:6px 13px;font-size:12px">JSON</button><button class="outlined" style="padding:6px 13px;font-size:12px">CSV</button><button class="outlined" style="padding:6px 13px;font-size:12px">XML</button></div></div>
-        <div style="display:grid;gap:2px;font-size:12.5px">
-          ${[['format_name', 'mov,mp4,m4a,3gp,3g2,mj2'], ['duration', '12:41.208 (761.208 s)'], ['size', '42.13 GB'], ['bit_rate', '474 583 kb/s'], ['nb_streams', '4'], ['major_brand', 'qt'], ['encoder', 'Blackmagic Design'], ['creation_time', '2026-08-19T14:02:11Z']].map(([k, v]) => `<div style="display:flex;justify-content:space-between;gap:14px;padding:7px 10px;border-radius:8px"><span class="mono" style="color:var(--muted);font-size:12px">${k}</span><b class="mono" style="font-size:12px">${v}</b></div>`).join('')}
-        </div></div>
-    </div>`,
-
-  hwaccel: () => `
-    <p class="eyebrow">Hardware acceleration</p><h1>h264_nvenc</h1><p class="lede">Detected: NVIDIA RTX 4080 (nvenc, nvdec, cuda) · Intel UHD 770 (qsv) · Software fallback always available.</p>
-    <div class="view-search"><input placeholder="Search NVENC/QSV options" style="background:var(--surface2);border:1px solid var(--line);border-radius:20px;color:var(--text);padding:10px 16px;width:280px"><button class="builder-button" data-builder="x">.*</button></div>
-    <div class="grid">
-      <div class="card span6"><h2>Encoder preset &amp; tuning</h2>
-        <p class="field" style="margin:0 0 6px">preset — p1 (fastest) → p7 (slowest, best quality)</p>
-        <div style="display:flex;gap:4px;margin-bottom:16px">${['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'].map((p) => `<button class="chip-btn mono${p === state.nvencPreset ? ' active' : ''}" data-nvencpreset="${p}" style="flex:1;text-align:center">${p}</button>`).join('')}</div>
-        <div class="two-col">${field('tune', sel(['hq — high quality', 'll — low latency', 'ull — ultra low latency', 'lossless'], 0))}${field('rc — rate control', sel(['constqp', 'vbr', 'cbr'], 1))}</div>
-        <div style="margin-top:14px">${slider('nvencCq', 'cq — constant quality (VBR)', state.nvencCq, 0, 51)}</div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">
-          <label class="check-row"><input type="checkbox" checked> spatial-aq</label><label class="check-row"><input type="checkbox" checked> temporal-aq</label>
-          <label class="check-row"><input type="checkbox"> weighted_pred</label><label class="check-row"><input type="checkbox" checked> b_ref_mode middle</label>
-        </div></div>
-      <div class="span6" style="display:grid;gap:14px;align-content:start">
-        <div class="card"><h2>Device inventory</h2><div class="list">
-          ${[['developer_board', 'NVIDIA GeForce RTX 4080', 'nvenc · nvdec · cuda filters · driver 581.20', 'ACTIVE', ''], ['memory', 'Intel UHD Graphics 770', 'qsv available · vaapi n/a on Windows', 'READY', ' idle'], ['computer', 'Software (x86-64 AVX-512)', 'libx264 · libx265 · libsvtav1 — always available', 'FALLBACK', ' idle']].map(([i, n, m, s2, cls]) => `
-          <div class="list-item"><span class="ms">${i}</span><span style="flex:1"><b style="font-size:13px">${n}</b><br><small>${m}</small></span><span class="tag${cls}">${s2}</span></div>`).join('')}
-        </div></div>
-        <div class="card"><h2>NVENC session load</h2>
-          ${[['Encoder utilization', 64], ['Decoder utilization', 22], ['VRAM 6.2 / 16 GB', 39]].map(([l, p]) => `<div style="margin-bottom:9px"><div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted)"><span>${l}</span><b class="mono" style="color:var(--accent)">${p}%</b></div><div class="progress-track" style="margin-top:5px"><span style="width:${p}%"></span></div></div>`).join('')}
-        </div></div>
-    </div>`,
-
-  streaming: () => `
-    <p class="eyebrow">Live output</p><h1>Streaming — HLS muxer</h1><p class="lede">Push to RTMP/SRT or write an HLS ladder. Every muxer AVOption is a typed control.</p>
-    <div class="view-search"><input placeholder="Search muxer & protocol options" style="background:var(--surface2);border:1px solid var(--line);border-radius:20px;color:var(--text);padding:10px 16px;width:280px"><button class="builder-button" data-builder="x">.*</button></div>
-    <div class="grid">
-      <div class="card span6"><h2 class="mono">hls options</h2><div style="display:grid;gap:14px">
-        ${slider('hlsTime', 'hls_time — target segment length', state.hlsTime, 1, 20, 1, ' s')}
-        ${slider('hlsList', 'hls_list_size — playlist entries (0 = all)', state.hlsList, 0, 30)}
-        ${field('hls_segment_type', sel(['mpegts', 'fmp4'], 0))}
-        <div><p class="field" style="margin:0 0 6px">hls_flags — bit flags</p><div style="display:flex;gap:8px;flex-wrap:wrap">
-          <label class="check-row"><input type="checkbox" checked> delete_segments</label><label class="check-row"><input type="checkbox" checked> independent_segments</label>
-          <label class="check-row"><input type="checkbox"> append_list</label><label class="check-row"><input type="checkbox"> temp_file</label>
-          <label class="check-row"><input type="checkbox" checked> program_date_time</label></div></div>
-        ${field('master_pl_name', '<input value="master.m3u8" class="mono">')}
-      </div></div>
-      <div class="span6" style="display:grid;gap:14px;align-content:start">
-        <div class="card"><h2>Publish targets</h2><div class="list">
-          <div class="list-item"><span class="ms">podcasts</span><span style="flex:1"><b style="font-size:13px">rtmp://live.example.tv/app/key</b><br><small>flv muxer · 6 Mb/s · connected 00:41:12</small></span><span class="tag" style="animation:pulse 2s infinite">LIVE</span></div>
-          <div class="list-item"><span class="ms" style="color:var(--muted)">satellite_alt</span><span style="flex:1"><b style="font-size:13px">srt://ingest.example.tv:9000</b><br><small>latency=120ms · passphrase set · standby</small></span><span class="tag idle">IDLE</span></div>
-        </div></div>
-        <div class="card"><h2>Ladder renditions</h2><div class="list">
-          ${[['1920×1080', 'libx264 high · 60 fps capable', '6.0 Mb/s'], ['1280×720', 'libx264 main', '3.2 Mb/s'], ['854×480', 'libx264 main', '1.4 Mb/s'], ['audio', 'aac-lc stereo', '128 kb/s']].map(([r, m, b]) => `<div class="list-item" style="font-size:12.5px"><b class="mono" style="width:70px">${r}</b><span style="color:var(--muted);flex:1">${m}</span><b class="mono" style="color:var(--accent)">${b}</b></div>`).join('')}
-        </div></div>
-    </div>`,
-
-  jobs: () => `
-    <div class="page-head"><div><p class="eyebrow">Queue</p><h1>Jobs &amp; logs</h1></div>
-    <div class="head-actions">${searchLine('Search log lines')}<button class="outlined danger-open" style="color:var(--danger)">Clear queue…</button></div></div>
-    <div class="card" style="display:flex;gap:8px;align-items:center;margin-bottom:12px;padding:10px 14px">
-      <b class="mono" style="font-size:12.5px;color:var(--accent)" id="job-sel-count">0 selected</b>
-      <button class="outlined" style="padding:5px 12px;font-size:11.5px" id="jobs-select-all">Select all</button>
-      <button class="outlined" style="padding:5px 12px;font-size:11.5px" id="jobs-clear-sel">Clear</button>
-      <button class="tonal" style="padding:5px 12px;font-size:11.5px" id="jobs-bulk-pause">Pause selected</button>
-      <button class="tonal" style="padding:5px 12px;font-size:11.5px" id="jobs-bulk-back">Move to back</button>
-      <button class="danger-open" style="color:var(--danger);padding:5px 12px;font-size:11.5px;font-weight:600">Cancel selected…</button>
-      <small style="color:var(--muted);margin-left:auto">Bulk actions apply to checked jobs</small>
-    </div>
-    <div class="list" style="margin-bottom:16px">${jobRows(true)}</div>
-    <div class="log-pane" id="log-pane">
-      ${['[libx264 @ 0x5f2c] using cpu capabilities: MMX2 SSE2Fast SSSE3 SSE4.2 AVX FMA3 BMI2 AVX2 AVX512',
-        '[libx264 @ 0x5f2c] profile High, level 4.1, 4:2:0, 8-bit',
-        'frame= 5288 fps= 87 q=22.0 size= 412416KiB time=00:03:40.54 bitrate=15324.1kbits/s speed=3.62x',
-        "[hls @ 0x71aa] Opening 'ep04/seg_1080_00042.ts' for writing",
-        '[loudnorm @ 0x82b1] input_i: -19.21 | input_tp: -0.31 | input_lra: 11.40 | input_thresh: -29.53',
-        '[Parsed_loudnorm_0] normalization_type: dynamic → linear (target gain 3.2 dB)',
-        'frame= 6120 fps= 88 q=21.0 size= 486912KiB time=00:04:15.29 bitrate=15621.7kbits/s speed=3.64x',
-        '[mp4 @ 0x60d1] moov atom will be written at start (faststart second pass)'].map((l) => `<div>${esc(l)}</div>`).join('')}
-    </div>`,
-
-  composer: () => `
-    <p class="eyebrow">Full CLI surface</p><h1>Command composer</h1><p class="lede">Every fftools flag — global, per-input, per-output — is a structured row with its own typed editor. The long tail is always reachable.</p>
-    <div style="display:grid;grid-template-columns:280px 1fr;gap:14px">
-      <div class="card" style="align-self:start;padding:16px">
-        <div class="search-line" style="margin-bottom:10px"><input placeholder="Search all flags" style="width:100%;border-radius:16px;padding:9px 13px;font-size:12.5px"><button class="builder-button" data-builder="x" style="height:38px;min-width:38px">.*</button></div>
-        <div style="display:grid;gap:2px">
-          ${[['Global', 74], ['Per-input', 41], ['Video', 96], ['Audio', 52], ['Subtitle', 18], ['Muxer private', 380], ['Advanced', 210]].map(([l, c], i) => `<button class="subnav-item${i === 2 ? ' active' : ''}" style="border-radius:11px">${l}<small>${c}</small></button>`).join('')}
-        </div></div>
-      <div style="display:grid;gap:14px;align-content:start">
-        <div class="card"><h2>Active flags</h2><div class="list">
-          ${[['-hwaccel', 'Use HW-accelerated decoding — enum of detected methods', 'cuda', 'GLOBAL'], ['-ss', 'Seek input to position — timecode scrubber', '00:00:00.000', 'INPUT 0'], ['-c:v', 'Video encoder — full codec registry picker', 'libx264', 'OUTPUT'], ['-crf', 'Constant quality 0–51 — slider', String(state.crf), 'OUTPUT'], ['-vf', 'Filtergraph — opens node editor', 'scale=1920:-2,drawtext=…', 'OUTPUT'], ['-c:a', 'Audio encoder', 'aac', 'OUTPUT'], ['-b:a', 'Audio bitrate — stepper', '256k', 'OUTPUT'], ['-movflags', 'mp4 muxer bit flags — checkbox set', '+faststart', 'OUTPUT']].map(([f, d, v, sc]) => `
-          <div class="list-item"><b class="mono" style="font-size:12.5px;color:var(--accent);width:130px">${f}</b><span style="flex:1;font-size:12px;color:var(--muted)">${d}</span><b class="mono" style="font-size:12px">${esc(v)}</b><span class="tag idle">${sc}</span><button style="color:var(--muted)"><span class="ms" style="font-size:16px">edit</span></button></div>`).join('')}
-          <button class="upload-slot">+ Add flag from catalog</button>
-        </div></div>
-        <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h2 style="margin:0">Composed command</h2><div style="display:flex;gap:6px"><button class="tonal" style="padding:6px 14px;font-size:12px" id="copy-command-2">Copy</button><button class="filled" style="padding:6px 14px;font-size:12px">Queue</button></div></div>
-        <pre class="cmd-pre">${esc(liveCommand())}</pre></div>
-      </div>
-    </div>`,
-
-  converter: () => `
-    <p class="eyebrow">Universal feature</p><h1>File converter</h1><p class="lede">Byte-based type detection (magic numbers, not extensions), a bounded adapter registry, guided target choice, batches, and honest loss disclosure.</p>
-    <div class="view-search"><input placeholder="Search adapter registry" style="background:var(--surface2);border:1px solid var(--line);border-radius:20px;color:var(--text);padding:10px 16px;width:280px"><button class="builder-button" data-builder="x">.*</button></div>
-    <div class="grid">
-      <div class="card span6">
-        <label class="upload-slot" style="padding:26px"><span class="ms" style="font-size:20px">upload_file</span>Drop files or click to add a batch<input type="file" hidden multiple></label>
-        <div class="list" style="margin-top:12px">
-          <div class="list-item"><span class="ms">movie</span><span style="flex:1"><b style="font-size:13px">board_meeting.webm</b><br><small class="mono">detected by bytes: EBML → Matroska/WebM · VP9 + Opus</small></span><span class="tag">SUPPORTED</span></div>
-          <div class="list-item"><span class="ms">graphic_eq</span><span style="flex:1"><b style="font-size:13px">voicemail.amr</b><br><small class="mono">detected by bytes: #!AMR → AMR-NB mono 8 kHz</small></span><span class="tag">SUPPORTED</span></div>
-          <div class="list-item"><span class="ms" style="color:var(--muted)">draft</span><span style="flex:1"><b style="font-size:13px">notes.docx</b><br><small class="mono">detected by bytes: PK zip + word/ — not a media type</small></span><span class="tag idle" style="color:var(--danger)">UNSUPPORTED</span></div>
-        </div>
-        <div class="notice" style="margin-top:12px">notes.docx is skipped with an honest explanation instead of producing corrupt output.</div>
-      </div>
-      <div class="span6" style="display:grid;gap:14px;align-content:start">
-        <div class="card"><h2>Guided target choice</h2><p class="hint">Each target shows its loss disclosure before you commit.</p>
-          <div class="list">
-            <label class="list-item" style="background:var(--tonal)"><input type="checkbox" checked><span style="flex:1"><b style="font-size:13px;color:var(--accent)">mp4 · H.264 + AAC</b><br><small>Lossy re-encode — generation loss. Universal playback.</small></span></label>
-            <label class="list-item"><input type="checkbox"><span style="flex:1"><b style="font-size:13px">mkv · stream copy</b><br><small>Lossless — container rewrite only. Requires compatible codecs.</small></span></label>
-            <label class="list-item"><input type="checkbox"><span style="flex:1"><b style="font-size:13px">flac · audio only</b><br><small>Lossless audio; video streams dropped — disclosed, not silent.</small></span></label>
-          </div>
-          <div style="display:flex;gap:8px;margin-top:14px"><button class="filled">Convert batch (2 files)</button><button class="outlined">Preview commands</button></div></div>
-        <div class="card"><h2>Isolation &amp; limits</h2><div style="display:grid;gap:10px;font-size:12.5px">
-          <label class="check-row" style="background:transparent"><input type="checkbox" checked> Bounded resources per conversion (2 threads · 2 GB)</label>
-          <label class="check-row" style="background:transparent"><input type="checkbox" checked> Validate output before replacing anything</label>
-          <label class="check-row" style="background:transparent"><input type="checkbox" checked> Keep originals untouched</label>
-        </div></div>
-      </div>
-    </div>`,
-
-  settings: () => `
-    <p class="eyebrow">Application</p><h1>Settings</h1><p class="lede">All settings persist locally and are searchable from the command palette.</p>
-    <div class="view-search"><input placeholder="Search settings" style="background:var(--surface2);border:1px solid var(--line);border-radius:20px;color:var(--text);padding:10px 16px;width:280px"><button class="builder-button" data-builder="x">.*</button></div>
-    <div class="grid">
-      <div class="card span6"><h2>Appearance</h2><div style="display:grid;gap:12px">
-        <div class="field"><span>Theme</span><div class="seg"><button id="set-dark" class="${state.theme === 'dark' ? 'active' : ''}">Dark</button><button id="set-light" class="${state.theme === 'light' ? 'active' : ''}">Light</button></div></div>
-        ${field('Density', sel(['Compact', 'Comfortable', 'Large'], 1))}
-        <button class="tonal" id="logo-open-2" style="justify-self:start">Customize app logo…</button>
-        <button class="outlined appearance-open" style="justify-self:start">Per-element appearance editor…</button>
-      </div></div>
-      <div class="span6" style="display:grid;gap:14px;align-content:start">
-        <div class="card"><h2>Personal vocabulary</h2>
-          <p class="hint" style="margin-bottom:10px">${state.vocab ? Object.keys(state.vocab.entries || {}).length + ' entries loaded (schema v' + state.vocab.schemaVersion + '). Private and local.' : 'No vocabulary loaded. Upload a local JSON (schema v1, ≤64 KB) to rename UI terms privately on this machine.'}</p>
-          <label class="upload-slot"><span class="ms" style="font-size:18px">upload_file</span>Upload vocabulary JSON<input type="file" class="vocab-upload" accept="application/json" hidden></label></div>
-        <div class="card"><h2>Security — password &amp; TOTP</h2>
-          <p class="hint">Locking requires a saved password. Stored locally as a salted SHA-256 hash.</p>
-          <div style="display:grid;gap:12px">
-            <label class="field">Password<div style="display:flex;gap:6px"><input id="sec-set-pw" type="password" placeholder="Set a password" style="flex:1"><button type="button" class="tonal" id="sec-save" style="padding:0 16px">Save</button></div></label>
-            <label class="check-row" style="background:transparent"><input type="checkbox" id="sec-totp"> Require TOTP as second factor (secret: <code class="mono" style="color:var(--accent)">JBSW Y3DP EHPK 3PXP</code>)</label>
-            <button class="filled" id="sec-lock" style="justify-self:start"><span class="ms" style="font-size:17px">lock</span>Lock app now</button>
-          </div></div>
-        <div class="card"><h2>Locked elements (toy locks)</h2>
-          <div id="locks-list" style="display:grid;gap:6px">${Object.keys(state.locks || {}).length ? Object.keys(state.locks).map((l) => `<div class="list-item"><span class="ms" style="color:var(--danger);font-size:16px">lock</span><b style="flex:1;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l)}</b><button class="tonal lock-unlock" data-l="${esc(l)}" style="padding:5px 12px;font-size:11.5px">Unlock…</button></div>`).join('') : '<p class="hint">Nothing locked. Right-click any element → “Lock element”.</p>'}</div></div>
-        <div class="card"><h2>Universal feature inventory</h2><p class="hint" style="font-size:12px">Fail-closed per-surface delivery: every row is asserted against the built output.</p>
-          <div style="display:grid;gap:5px;font-size:12.5px">
-            ${[['Command palette (Ctrl+Shift+F)','global'],['Regex builder + advanced tokens','every search'],['Personal vocabulary upload','Overview · Settings'],['App-logo customization','titlebar'],['Universal file converter','System › File converter'],['Two-key super confirmation','destructive actions'],['Per-element appearance editor','right-click · Settings'],['Toy locks (functional)','right-click any element'],['Notification centre','titlebar'],['Right-click menus with search','tabs · jobs · registry'],['Bulk job actions','Jobs & logs'],['Option guides with live preview','every config ⓘ']].map(([n,w]) => `<div style="display:flex;gap:10px;align-items:center;padding:7px 10px;border-radius:9px;background:var(--surface2)"><span style="width:8px;height:8px;border-radius:50%;background:var(--accent);flex:none"></span><span style="flex:1">${n}</span><small class="mono" style="color:var(--muted);font-size:10.5px">${w}</small></div>`).join('')}
-          </div></div>
-        <div class="card"><h2>Execution</h2><div style="display:grid;gap:10px;font-size:12.5px">
-          <label class="check-row" style="background:transparent"><input type="checkbox" checked> Run up to 2 jobs in parallel</label>
-          <label class="check-row" style="background:transparent"><input type="checkbox" checked> Prefer hardware encoders when detected</label>
-          <label class="check-row" style="background:transparent"><input type="checkbox"> Keep intermediate two-pass logs</label>
-          <label class="check-row" style="background:transparent"><input type="checkbox" checked> Notify on job completion</label>
-        </div></div>
-      </div>
-    </div>`,
-};
-const registryView = (id) => {
-  const [title, sub, ph, filters, rows] = REGISTRY[id];
-  return `
-    <div class="page-head"><div><p class="eyebrow">Registry · full build inventory</p><h1>${title}</h1><p class="lede" style="margin:0">${sub}</p></div>
-    <div class="head-actions">${searchLine(ph)}</div></div>
-    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${filters.map((f, i) => `<button class="chip-btn${i === 0 ? ' active' : ''}">${f}</button>`).join('')}</div>
-    <div style="display:grid;gap:7px">${rows.map(([n, d, tags]) => `<button class="registry-row"><b>${esc(n)}</b><span class="desc">${esc(d)}</span>${tags.split('·').map((t) => `<span class="tag">${t}</span>`).join('')}<span class="ms" style="font-size:17px;color:var(--muted)">tune</span></button>`).join('')}</div>
-    <p style="margin:14px 0 0;color:var(--muted);font-size:12px">Showing ${rows.length} — every entry opens its own generated option editor.</p>`;
-};
-Object.keys(REGISTRY).forEach((k) => { VIEWS[k] = () => registryView(k); });
-
-/* ---------- render ---------- */
-function render() {
-  const g = viewGroup(state.view);
-  $('#rail').innerHTML = RAIL.map(([id, icon, label]) => `<button class="rail-item${id === g ? ' active' : ''}" data-group="${id}"><span class="ms">${icon}</span><b>${label}</b></button>`).join('') +
-    `<div class="rail-spacer"></div><button class="rail-item" id="palette-open" aria-keyshortcuts="Control+Shift+F"><span class="ms">keyboard_command_key</span><b>Commands</b></button>`;
-  $('#subnav').innerHTML = `<p class="eyebrow">${GROUPS[g].title}</p><div style="display:grid;gap:3px">` +
-    GROUPS[g].items.map(([id, icon, label, count]) => `<button class="subnav-item${id === state.view ? ' active' : ''}" data-go="${id}"><span class="ms">${icon}</span><span style="flex:1">${label}</span>${count ? `<small>${count}</small>` : ''}</button>`).join('') +
-    `</div><div class="build-note"><b style="color:var(--text)">Build</b><br>ffmpeg 8.0 · GPL v3<br>libx264 · libx265 · nvenc</div>`;
-  const TABS = [['overview', 'dashboard', 'Overview'], ['convert', 'sync_alt', 'Convert — libx264'], ['filters', 'account_tree', 'Filtergraph'], ['jobs', 'receipt_long', 'Jobs & logs']];
-  $('#tabs').innerHTML = TABS.map(([id, icon, label]) => `<button class="tab${id === state.view ? ' active' : ''}" data-go="${id}" role="tab"><span class="ms">${icon}</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span></button>`).join('') +
-    `<button title="Open a tab" style="height:36px;width:36px;color:var(--muted);font-size:19px">+</button>
-     <button id="tab-list" title="Tabs, groups, and safe closing" style="height:36px;width:36px;color:var(--muted)"><span class="ms" style="font-size:19px">menu</span></button>
-     <div class="palette-hint" id="palette-open-2"><span class="ms" style="font-size:16px">search</span>Search everything <b>Ctrl+Shift+F</b></div>`;
-  $('#content').innerHTML = (VIEWS[state.view] || VIEWS.overview)();
-  $('#live-command').textContent = liveCommand();
-  document.body.classList.toggle('light', state.theme === 'light');
-  $('#logo-open').textContent = state.logo;
-  save();
-  wireContent();
-}
-
-/* ---------- wiring ---------- */
-const go = (v) => { state.view = v; render(); };
-function wireContent() {
-  $$('[data-go]').forEach((b) => b.addEventListener('click', () => go(b.dataset.go)));
-  $$('[data-group]').forEach((b) => b.addEventListener('click', () => go(GROUPS[b.dataset.group].items[0][0])));
-  $$('#palette-open,#palette-open-2').forEach((b) => b.addEventListener('click', openPalette));
-  const bindSlider = (id, key, num = true) => { const el = $('#' + id); if (el) el.addEventListener('input', () => { state[key] = num ? Number(el.value) : el.value; el.closest('div').querySelector('.slider-head b').textContent = el.value + (id === 'lufsI' ? ' LUFS' : id === 'lra' ? ' LU' : id === 'tp' ? ' dBTP' : id === 'hlsTime' ? ' s' : ''); $('#live-command').textContent = liveCommand(); const pre = $('#cmd-pre'); if (pre) pre.textContent = liveCommand(); save(); }); };
-  ['crf', 'crfMax', 'lookahead', 'textAlpha', 'lufsI', 'lra', 'tp', 'gifFps', 'gifColors', 'nvencCq', 'hlsTime', 'hlsList'].forEach((k) => bindSlider(k, k));
-  $$('[data-x264preset]').forEach((b) => b.addEventListener('click', () => { state.x264Preset = b.dataset.x264preset; render(); }));
-  $$('[data-nvencpreset]').forEach((b) => b.addEventListener('click', () => { state.nvencPreset = b.dataset.nvencpreset; render(); }));
-  $$('[data-bool]').forEach((c) => c.addEventListener('change', () => { state.bools[c.dataset.bool] = c.checked; save(); }));
-  $$('[data-node]').forEach((b) => b.addEventListener('click', () => { state.selNode = b.dataset.node; render(); }));
-  $$('[data-swatch]').forEach((b) => b.addEventListener('click', () => { state.fontColor = b.dataset.swatch; render(); }));
-  const fc = $('#fontcolor'); if (fc) fc.addEventListener('input', () => { state.fontColor = fc.value; $('#fontcolor-val').textContent = fc.value + '@' + state.textAlpha; $('#live-command').textContent = liveCommand(); save(); });
-  const tuneEl = $('#tune'); if (tuneEl) tuneEl.addEventListener('change', () => { state.tune = tuneEl.value; $('#live-command').textContent = liveCommand(); save(); });
-  const fu = $('#fps-up'), fd = $('#fps-down');
-  if (fu) fu.addEventListener('click', () => { state.fpsIdx = Math.min(7, state.fpsIdx + 1); render(); });
-  if (fd) fd.addEventListener('click', () => { state.fpsIdx = Math.max(0, state.fpsIdx - 1); render(); });
-  const sd = $('#set-dark'), sl = $('#set-light');
-  if (sd) sd.addEventListener('click', () => { state.theme = 'dark'; render(); });
-  if (sl) sl.addEventListener('click', () => { state.theme = 'light'; render(); });
-  $$('.danger-open').forEach((b) => b.addEventListener('click', openConfirm));
-  $$('[data-appearance],.appearance-open').forEach((b) => b.addEventListener('click', () => { $('#appearance-target').textContent = 'Target: ' + (b.dataset.appearance || 'selected element'); $('#appearance-dialog').showModal(); }));
-  $$('.builder-button').forEach((b) => b.addEventListener('click', (e) => { e.preventDefault(); openRegex(); }));
-  const lo2 = $('#logo-open-2'); if (lo2) lo2.addEventListener('click', openLogo);
-  $$('.vocab-upload').forEach((inp) => inp.addEventListener('change', async () => {
-    const f = inp.files[0]; if (!f) return;
-    if (f.size > 65536) return toast('Vocabulary rejected', 'File exceeds the 64 KB bound.');
-    try { const j = JSON.parse(await f.text()); if (j.schemaVersion !== 1 || typeof j.entries !== 'object') throw new Error('schema'); state.vocab = j; save(); toast('Vocabulary loaded', Object.keys(j.entries).length + ' entries — private and local.'); render(); }
-    catch { toast('Vocabulary rejected', 'Not a valid schema v1 vocabulary JSON.'); }
-  }));
-  const pick = $('#pick-input'); if (pick && window.api) pick.addEventListener('click', async () => { const p = await window.api.openFile(); if (p) toast('Input selected', p); });
-  state.jobSel = state.jobSel || {};
-  const selCount = () => { const el = $('#job-sel-count'); if (el) el.textContent = Object.values(state.jobSel).filter(Boolean).length + ' selected'; };
-  $$('.job-sel').forEach((c) => c.addEventListener('change', () => { state.jobSel[c.dataset.name] = c.checked; save(); selCount(); }));
-  selCount();
-  const jsa = $('#jobs-select-all'); if (jsa) jsa.addEventListener('click', () => { JOBS.forEach(([, n]) => state.jobSel[n] = true); save(); render(); });
-  const jcs = $('#jobs-clear-sel'); if (jcs) jcs.addEventListener('click', () => { state.jobSel = {}; save(); render(); });
-  const jbp = $('#jobs-bulk-pause'); if (jbp) jbp.addEventListener('click', () => { state.jobSel = {}; save(); render(); toast('Paused', 'Selected jobs paused.'); });
-  const jbb = $('#jobs-bulk-back'); if (jbb) jbb.addEventListener('click', () => { state.jobSel = {}; save(); render(); toast('Reordered', 'Selected jobs moved to back of queue.'); });
-  const ss = $('#sec-save'); if (ss) ss.addEventListener('click', () => { const pw = $('#sec-set-pw').value.trim(); if (!pw) return; window.secSave(pw, $('#sec-totp').checked).then(() => toast('Password saved', 'Stored locally as a salted hash.')); });
-  const sl = $('#sec-lock'); if (sl) sl.addEventListener('click', () => { window.secLock ? window.secLock() : toast('Set a password first', 'Locking requires a saved password.'); });
-  $$('.lock-unlock').forEach((b) => b.addEventListener('click', () => openConfirm('Unlock “' + b.dataset.l + '”?', 'Unlocking restores all interactions on this element.', () => { delete state.locks[b.dataset.l]; save(); render(); })));
-  $$('#copy-command,#copy-command-2').forEach((b) => b.addEventListener('click', () => { navigator.clipboard.writeText(liveCommand()); toast('Copied', 'Command copied to clipboard.'); }));
-}
-
-/* ---------- dialogs ---------- */
-function openPalette() {
-  const items = [];
-  Object.entries(GROUPS).forEach(([, g]) => g.items.forEach(([id, , label, count]) => items.push([`Go to ${label}`, `View · ${g.title}${count ? ' — ' + count + ' entries' : ''}`, () => go(id)])));
-  items.push(['Toggle theme', 'Setting · flips instantly', () => { state.theme = state.theme === 'dark' ? 'light' : 'dark'; render(); }]);
-  items.push(['Customize app logo', 'Setting · presentation only', openLogo]);
-  items.push(['Clear job queue…', 'Action · two-key safety gate', openConfirm]);
-  const list = $('#command-list'), search = $('#command-search');
-  const draw = (q = '') => {
-    let test = (t) => t.toLowerCase().includes(q.toLowerCase());
-    if (q.startsWith('/') && q.length > 1) { try { const re = new RegExp(q.slice(1), 'i'); test = (t) => re.test(t); } catch { } }
-    list.innerHTML = items.filter(([l, s]) => test(l + ' ' + s)).map(([l, s], i) => `<button class="command" data-i="${i}" value="default"><span><b style="font-size:13px">${esc(l)}</b><br><small>${esc(s)}</small></span><kbd>↵</kbd></button>`).join('');
-    $$('.command', list).forEach((b) => b.addEventListener('click', () => { $('#command-dialog').close(); items.filter(([l, s]) => test(l + ' ' + s))[+b.dataset.i][2](); }));
+const normalizeFiles = (result) => (Array.isArray(result) ? result : result ? [result] : []).slice(0, 500).map((item, index) => {
+  if (typeof item === 'string') return { handle: item, name: item.split(/[\\/]/).pop() || `File ${index + 1}`, supported: true };
+  return {
+    handle: item.handle ?? item.id ?? item.token ?? item.path,
+    name: bounded(item.name ?? item.displayName ?? item.path?.split(/[\\/]/).pop() ?? `File ${index + 1}`, 240),
+    kind: bounded(item.kind ?? item.type ?? '', 80), details: bounded(item.details ?? item.detectedType ?? '', 300),
+    supported: item.supported !== false
   };
-  search.value = ''; draw(); search.oninput = () => draw(search.value);
-  $('#command-dialog').showModal(); search.focus();
+}).filter((item) => item.handle);
+
+async function pickFile(slot, options = {}) {
+  try {
+    const files = normalizeFiles(await apiCall('files.open', options));
+    if (slot && files.length) state.inputs[slot] = files[0];
+    if (files.length) render();
+    return files;
+  } catch (error) { notify('File picker failed', error.message, 'error'); return []; }
 }
-const REGEX_TOKENS = [['\\d', 'any digit 0-9'], ['\\w', 'word character'], ['\\s', 'whitespace'], ['[a-z]', 'character range'], ['[^]', 'negated set'], ['^', 'start anchor'], ['$', 'end anchor'], ['+', 'one or more'], ['*', 'zero or more'], ['?', 'optional'], ['{2,4}', 'count range'], ['|', 'alternation'], ['()', 'capture group'], ['(?:)', 'non-capture group'], ['\\b', 'word boundary'], ['.', 'any character'], ['\\.', 'literal dot']];
-const REGEX_RECIPES = [['Hardware encoders', '(nvenc|qsv|amf|videotoolbox)$'], ['10-bit codecs', '(10le|10be|p010)'], ['Timecodes', '^\\d{2}:\\d{2}:\\d{2}[.:]\\d+$'], ['Log errors only', '\\[(error|fatal)\\]'], ['Segment files', 'seg_\\d+_\\d+\\.(ts|m4s)$']];
-const REGEX_FLAGS = [['i', 'case-insensitive'], ['g', 'global — all matches'], ['m', 'multiline anchors'], ['u', 'unicode']];
-function explainRegex(pat) {
-  try { new RegExp(pat); } catch (e) { return 'Invalid pattern — ' + e.message; }
-  const parts = [];
-  if (pat.startsWith('^')) parts.push('anchored to start');
-  if (pat.endsWith('$')) parts.push('anchored to end');
-  if (/\|/.test(pat)) parts.push('matches any of the alternatives');
-  if (/\(\?:/.test(pat)) parts.push('groups without capturing'); else if (/\(/.test(pat)) parts.push('captures a group');
-  if (/\\d/.test(pat)) parts.push('expects digits');
-  if (/[+*]|\{\d/.test(pat)) parts.push('repeats a token');
-  return parts.length ? parts.join('; ') + '.' : 'literal text match.';
+
+async function chooseOutput(slot, options = {}) {
+  try {
+    const result = await apiCall('files.save', options);
+    const file = normalizeFiles(result)[0];
+    if (!file) return null;
+    state.outputs[slot] = file; render(); return file;
+  } catch (error) { notify('Output picker failed', error.message, 'error'); return null; }
 }
-function openRegex() {
-  const d = $('#regex-dialog'), p = $('#regex-pattern'), f = $('#regex-flags'), s2 = $('#regex-sample'), out = $('#regex-preview'), ex = $('#regex-explain');
-  const update = () => { ex.textContent = explainRegex(p.value); try { const re = new RegExp(p.value, f.value.replace('g', '')); const m = s2.value.split(/\s+/).filter((w) => re.test(w)); out.textContent = m.length ? 'matches: ' + m.join(', ') : 'no matches in sample'; } catch (e) { out.textContent = 'invalid pattern: ' + e.message; } };
-  $('#regex-tokens').innerHTML = REGEX_TOKENS.map(([t, desc], i) => `<button type="button" class="tok-btn" title="${desc}" data-i="${i}">${esc(t)}</button>`).join('');
-  $$('#regex-tokens .tok-btn').forEach((b) => (b.onclick = () => { p.value += REGEX_TOKENS[+b.dataset.i][0]; update(); }));
-  $('#regex-recipes').innerHTML = REGEX_RECIPES.map(([l, pat], i) => `<button type="button" class="tag" title="${esc(pat)}" data-i="${i}" style="cursor:pointer;border:0;font-size:11.5px;padding:5px 12px">${l}</button>`).join('');
-  $$('#regex-recipes .tag').forEach((b) => (b.onclick = () => { p.value = REGEX_RECIPES[+b.dataset.i][1]; update(); }));
-  const drawFlags = () => { $('#regex-flag-btns').innerHTML = REGEX_FLAGS.map(([fl, desc]) => `<button type="button" class="flag-btn${f.value.includes(fl) ? ' active' : ''}" title="${desc}" data-f="${fl}">${fl}</button>`).join(''); $$('#regex-flag-btns .flag-btn').forEach((b) => (b.onclick = () => { const fl = b.dataset.f; f.value = f.value.includes(fl) ? f.value.replace(fl, '') : f.value + fl; drawFlags(); update(); })); };
-  drawFlags(); [p, s2].forEach((el) => (el.oninput = update)); update(); d.showModal();
+
+const quotePreview = (arg) => /[\s"']/u.test(arg) ? `"${String(arg).replace(/["\\]/g, '\\$&')}"` : String(arg);
+const commandPreview = (argv) => ['ffmpeg', ...(Array.isArray(argv) ? argv : [])].map(quotePreview).join(' ');
+const previewArgs = (argv) => { const names=new Map(allFiles().map((file)=>[file.handle,file.name]));return argv.map((arg)=>names.get(arg)||arg); };
+function build(kind, values) {
+  const builders = window.FFmpegCommandBuilders || window.commandBuilders || {};
+  const fn = builders[kind] || (builders.build && ((v) => builders.build(kind, v)));
+  if (typeof fn !== 'function') throw new Error(`Command builder unavailable: ${kind}`);
+  const result = fn(Object.assign({}, values, { progress: false })); const argv = Array.isArray(result) ? result : result?.argv;
+  if (!Array.isArray(argv) || argv.some((arg) => typeof arg !== 'string')) throw new Error(`Invalid ${kind} command result`);
+  return argv.slice(0, 512).map((arg) => bounded(arg, 4096));
 }
-/* ---------- context menus ---------- */
-function showCtx(e, title, sub, items) {
-  e.preventDefault(); e.stopPropagation();
-  state.locks = state.locks || {};
-  if (state.locks[title]) {
-    items = [['lock_open', 'Unlock element… (safety gate)', false, () => openConfirm('Unlock “' + title + '”?', 'This element was locked as a toy lock. Unlocking restores all interactions.', () => { delete state.locks[title]; save(); render(); })]];
-  } else {
-    items = items.concat([
-      ['palette', 'Edit appearance', false, () => { $('#appearance-target').textContent = 'Target: ' + title; $('#appearance-dialog').showModal(); }],
-      ['lock', 'Lock element (toy lock)', false, () => { state.locks[title] = true; save(); render(); toast('Locked', title + ' is now a toy lock — right-click to unlock.'); }],
-      ['support_agent', 'File a support ticket', false, () => toast('Support ticket', 'Ticket drafted for “' + title + '” — see notification centre.')],
-    ]);
-  }
-  const m = $('#ctx-menu');
-  m.innerHTML = `<header><b>${esc(title)}</b><br><small>${esc(sub)}</small></header>` +
-    items.map(([icon, label, danger], i) => `<button data-i="${i}" class="${danger ? 'danger' : ''}"><span class="ms">${icon}</span>${esc(label)}</button>`).join('');
-  m.hidden = false;
-  m.style.left = Math.min(e.clientX, innerWidth - 250) + 'px';
-  m.style.top = Math.min(e.clientY, innerHeight - 60 - items.length * 38) + 'px';
-  $$('button', m).forEach((b) => (b.onclick = () => { m.hidden = true; const fn = items[+b.dataset.i][3]; if (fn) fn(); }));
-}
-document.addEventListener('click', () => { $('#ctx-menu').hidden = true; });
-document.addEventListener('contextmenu', (e) => {
-  const tab = e.target.closest('.tab');
-  if (tab) return showCtx(e, tab.textContent.trim(), 'Workspace tab', [
-    ['keep', 'Pin tab'], ['tab_duplicate', 'Duplicate tab'], ['folder', 'Move to group…', false, openTabManager],
-    ['close', 'Close tab', true], ['clear_all', 'Close others…', true, openTabManager]]);
-  const row = e.target.closest('.registry-row');
-  if (row) return showCtx(e, row.querySelector('b').textContent, 'Registry entry', [
-    ['tune', 'Open option editor'], ['content_copy', 'Copy name', false, () => navigator.clipboard.writeText(row.querySelector('b').textContent)],
-    ['bookmarks', 'Use in new preset', false, () => go('presets')], ['description', 'Show source AVOption table']]);
-  const job = e.target.closest('.list-item');
-  if (job && (state.view === 'jobs' || state.view === 'overview') && job.querySelector('.progress-track')) {
-    return showCtx(e, job.querySelector('b').textContent, 'Job', [
-      ['pause', 'Pause job'], ['low_priority', 'Move to back of queue'],
-      ['terminal', 'Copy full command', false, () => navigator.clipboard.writeText(liveCommand())],
-      ['receipt_long', 'Open log', false, () => go('jobs')], ['cancel', 'Cancel job…', true, openConfirm]]);
-  }
-  // generic fallback: every element gets appearance editor + toy lock
-  const host = e.target.closest('button,label,h1,h2,h3,pre,input,select,.card,.list-item') || e.target;
-  const label = ((host.innerText || host.value || host.tagName || 'Element').trim().split('\n')[0] || 'Element').slice(0, 42) || 'Element';
-  showCtx(e, label, 'Any element — appearance & locks', []);
+const allFiles = () => [...Object.values(state.inputs), ...Object.values(state.outputs), ...state.converterFiles].filter(Boolean);
+const runtimeArgs = (argv) => {
+  const handles = new Map(allFiles().map((file) => [file.handle, file]));
+  return argv.map((arg) => {
+    const file = handles.get(arg);
+    return file ? { fileHandle: file.handle, kind: file.kind === 'output' || Object.values(state.outputs).some((value) => value?.handle === file.handle) ? 'output' : 'input' } : arg;
+  });
+};
+const convertValues = () => ({
+  input: state.inputs.convert?.handle, output: state.outputs.convert?.handle,
+  videoCodec: state.form.codec, audioCodec: state.form.codec === 'copy' ? 'copy' : 'aac',
+  crf: state.form.codec === 'copy' ? undefined : state.form.crf, preset: state.form.codec === 'copy' ? undefined : state.form.preset,
+  tune: state.form.codec === 'copy' ? undefined : state.form.tune, width: state.form.width, height: state.form.height,
+  fps: state.form.fps || undefined, faststart: state.form.container === 'mp4', hwaccel: 'none'
 });
-function openConfirm(title, copy, onGo) {
-  const d = $('#confirm-dialog'); const keys = { a: false, l: false };
-  $('#confirm-title').textContent = title || 'Clear the job queue?';
-  $('#confirm-copy').textContent = copy || 'This cancels running jobs and removes queued jobs. Press both keys, then move the slider to the end to authorize.';
-  const sliderEl = $('#confirm-slider'), goBtn = $('#confirm-go'), prog = $('#confirm-progress');
-  sliderEl.value = 0; prog.style.width = '0'; sliderEl.disabled = true; goBtn.disabled = true;
-  $$('.key-row button', d).forEach((b) => { b.classList.remove('ready'); b.onclick = () => { keys[b.dataset.key] = true; b.classList.add('ready'); if (keys.a && keys.l) sliderEl.disabled = false; }; });
-  sliderEl.oninput = () => { prog.style.width = sliderEl.value + '%'; goBtn.disabled = sliderEl.value < 100; };
-  goBtn.onclick = () => { d.close(); if (onGo) onGo(); else { state.jobSel = {}; save(); render(); toast('Queue cleared', 'All jobs cancelled and removed.'); } };
-  d.showModal();
+const safePreview = () => { try { return commandPreview(previewArgs(build('convert', convertValues()))); } catch (error) { return error.message; } };
+
+async function enqueue(kind, values, label) {
+  try {
+    const argv = build(kind, values);
+    await apiCall('jobs.enqueue', { label: bounded(label || kind, 160), args: runtimeArgs(argv) });
+    notify('Job queued', bounded(label ?? kind, 160)); state.view = 'jobs'; await refreshJobs();
+  } catch (error) { notify('Could not queue job', error.message, 'error'); }
 }
-function openLogo() {
-  const wrap = $('#logo-presets');
-  wrap.innerHTML = ['M', 'F', '▶', '◆', '8'].map((g) => `<button type="button" data-glyph="${g}" style="width:46px;height:46px;border-radius:14px;border:2px solid ${g === state.logo ? 'var(--accent)' : 'var(--line)'};background:${g === state.logo ? 'var(--accent)' : 'var(--surface2)'};color:${g === state.logo ? 'var(--on-accent)' : 'var(--text)'};font-weight:800;font-size:17px">${g}</button>`).join('');
-  $$('[data-glyph]', wrap).forEach((b) => b.addEventListener('click', () => { state.logo = b.dataset.glyph; render(); openLogo(); }));
-  $('#logo-reset').onclick = (e) => { e.preventDefault(); state.logo = 'M'; render(); openLogo(); };
-  $('#logo-dialog').showModal();
+
+const normalizeJob = (job, index) => ({
+  id: String(job.id ?? job.jobId ?? index), label: bounded(job.label ?? job.name ?? `Job ${index + 1}`, 200),
+  kind: bounded(job.kind ?? 'ffmpeg', 60), status: bounded(job.status ?? 'queued', 30).toLowerCase(),
+  progress: clamp(job.progress?.percent ?? job.percent ?? 0, 0, 100), speed: bounded(job.progress?.speed ?? job.speed ?? '', 50),
+  exitCode: job.exitCode, argv: Array.isArray(job.argv || job.args) ? (job.argv || job.args).map((arg) => bounded(typeof arg === 'string' ? arg : arg?.name || '[selected file]', 4096)).slice(0, 512) : [],
+  logs: Array.isArray(job.logs) ? job.logs.slice(-1000).map((line) => bounded(line, 4000)) : [], error: bounded(job.error ?? '', 1000)
+});
+
+async function refreshJobs() {
+  try {
+    const result = await apiCall('jobs.list');
+    state.jobs = (Array.isArray(result) ? result : result?.jobs || []).slice(0, 1000).map(normalizeJob); render();
+  } catch (error) { state.runtime.error = error.message; render(); }
+}
+
+const jobRows = (selectable = false) => state.jobs.length ? state.jobs.map((job) => `<div class="list-item job-row" data-job-id="${esc(job.id)}">
+  ${selectable ? `<input class="job-select" type="checkbox" data-job-id="${esc(job.id)}"${state.selectedJobs.has(job.id) ? ' checked' : ''}>` : ''}
+  <span class="ms">${job.status === 'completed' ? 'check_circle' : job.status === 'failed' ? 'error' : 'movie'}</span>
+  <span style="flex:1;min-width:0"><b>${esc(job.label)}</b><br><small class="mono">${esc(job.argv.length ? commandPreview(job.argv) : job.kind)}</small></span>
+  <span class="tag${['completed', 'cancelled', 'failed'].includes(job.status) ? ' idle' : ''}">${esc(job.status.toUpperCase())}</span>
+  <b class="mono" style="font-size:11px;color:var(--muted)">${esc(job.speed || (job.exitCode != null ? `exit ${job.exitCode}` : ''))}</b>
+  <button class="job-focus" data-job-id="${esc(job.id)}" title="Open job log"><span class="ms">receipt_long</span></button>
+  <div class="progress-track" style="grid-column:1/-1"><span style="width:${job.progress}%"></span></div></div>`).join('') : '<div class="empty-state"><b>No jobs yet</b><br><small>Choose a real input and output, then queue an operation.</small></div>';
+
+const field = (label, control) => `<label class="field"><span>${esc(label)}</span>${control}</label>`;
+const input = (id, value, type = 'text', extra = '') => `<input id="${id}" type="${type}" value="${esc(value)}" ${extra}>`;
+const select = (id, values, selected) => `<select id="${id}">${values.map((value) => `<option value="${esc(value)}"${String(value) === String(selected) ? ' selected' : ''}>${esc(value)}</option>`).join('')}</select>`;
+const pageHead = (eyebrow, title, description, actions = '') => `<div class="page-head"><div><p class="eyebrow">${esc(eyebrow)}</p><h1>${esc(title)}</h1><p class="lede">${esc(description)}</p></div><div class="head-actions">${actions}</div></div>`;
+const displayFile = (file, empty) => file ? esc(file.name) : `<span class="hint">${esc(empty)}</span>`;
+const pickerCard = (slot, label, output = false) => `<div class="list-item"><span class="ms">${output ? 'output' : 'movie'}</span><span style="flex:1;min-width:0"><b>${esc(label)}</b><br><small class="mono">${displayFile(output ? state.outputs[slot] : state.inputs[slot], output ? 'Choose an output destination' : 'Choose an input file')}</small></span><button class="tonal ${output ? 'pick-output' : 'pick-input'}" data-slot="${slot}">${output ? 'Choose' : 'Browse'}</button></div>`;
+
+const VIEWS = {
+  overview: () => {
+    const counts = state.runtimeCatalog.counts || {};
+    const running = state.jobs.filter((job) => ['running', 'encoding'].includes(job.status)).length;
+    const queued = state.jobs.filter((job) => job.status === 'queued').length;
+    const cards = [
+      ['Runtime', state.runtime.loading ? 'Loading' : state.runtime.available ? state.runtime.version || 'Ready' : 'Unavailable', state.runtime.error || 'Bundled FFmpeg status'],
+      ['Codecs', counts.codecs ?? '—', counts.codecs == null ? 'Load from the bundled runtime' : 'Reported by this build'],
+      ['Filters', counts.filters ?? '—', counts.filters == null ? 'Load from the bundled runtime' : 'Reported by this build'],
+      ['Queue', `${running} + ${queued}`, 'running + queued']
+    ];
+    return `${pageHead('Media control plane', 'Overview', 'Live state from the bundled FFmpeg runtime and durable job queue.', '<button class="filled" data-go="convert">New job</button><button class="tonal" data-go="composer">Command composer</button>')}
+      <div class="grid">${cards.map(([label, value, sub]) => `<div class="card span3"><small>${esc(label)}</small><div class="stat">${esc(value)}</div><small>${esc(sub)}</small></div>`).join('')}
+      <div class="card span8"><div class="section-head"><h2>Active queue</h2><button class="tonal" data-go="jobs">All jobs</button></div><div class="list">${jobRows()}</div></div>
+      <div class="card span4"><h2>Quick actions</h2><div class="list">${[['sync_alt','Convert a file','convert'],['content_cut','Trim a clip','trim'],['graphic_eq','Normalize audio','audio'],['search_insights','Inspect media','inspector']].map(([icon,label,view]) => `<button class="list-item" data-go="${view}"><span class="ms">${icon}</span>${label}</button>`).join('')}</div></div></div>`;
+  },
+
+  convert: () => `${pageHead('Transcode', 'Convert', 'Choose real files and generate a structured FFmpeg argument vector.', '<button class="outlined" id="save-convert-preset">Save as preset</button><button class="filled" id="queue-convert">Queue job</button>')}
+    <div class="grid"><div class="card span7"><h2>Video encoding</h2><div class="two-col">
+      ${field('Encoder', select('convert-codec', ['libx264','libx265','libsvtav1','libvpx-vp9','copy'], state.form.codec))}
+      ${field('Container', select('convert-container', ['mp4','mkv','webm','mov','mpegts'], state.form.container))}
+      ${field('CRF', input('convert-crf', state.form.crf, 'number', 'min="0" max="63"'))}
+      ${field('Preset', select('convert-preset', ['ultrafast','veryfast','fast','medium','slow','slower','veryslow'], state.form.preset))}
+      ${field('Tune', select('convert-tune', ['none','film','animation','grain','stillimage','fastdecode','zerolatency'], state.form.tune))}
+      ${field('Frame rate (blank keeps source)', input('convert-fps', state.form.fps, 'text', 'placeholder="24000/1001"'))}
+      ${field('Width', input('convert-width', state.form.width, 'number'))}${field('Height (-2 keeps aspect)', input('convert-height', state.form.height, 'number'))}
+    </div></div><div class="span5" style="display:grid;gap:14px"><div class="card"><h2>Input → output</h2><div class="list">${pickerCard('convert','Input')}${pickerCard('convert','Output',true)}</div></div>
+    <div class="card"><h2>Live command</h2><pre class="cmd-pre" id="cmd-pre">${esc(safePreview())}</pre><button class="tonal" id="copy-current-command">Copy preview</button></div></div></div>`,
+
+  trim: () => `${pageHead('Cut or re-encode', 'Trim & clip', 'Type exact timecodes and choose stream copy or frame-accurate output.', '<button class="filled" id="queue-trim">Queue trim</button>')}
+    <div class="grid"><div class="card span7"><div class="list">${pickerCard('trim','Input')}${pickerCard('trim','Output',true)}</div><div class="two-col" style="margin-top:14px">
+      ${field('In point (-ss)', input('trim-start', state.form.trimStart, 'text', 'placeholder="00:00:00.000"'))}
+      ${field('Out point (-to, optional)', input('trim-end', state.form.trimEnd, 'text', 'placeholder="00:00:10.000"'))}
+      ${field('Mode', select('trim-mode', ['copy','reencode'], state.form.trimMode))}
+      <label class="check-row"><input id="trim-negative" type="checkbox"${state.form.avoidNegative ? ' checked' : ''}> Avoid negative timestamps</label>
+    </div></div><div class="card span5"><h2>Preview</h2><div class="empty-state">A real preview becomes available after a file is selected and inspected.</div></div></div>`,
+
+  filters: () => `${pageHead('Filtergraph', 'Node graph', 'Build a real ordered filter chain, edit each node, and queue it.', '<button class="outlined" id="add-filter">Add node</button><button class="filled" id="queue-filtergraph">Apply & queue</button>')}
+    <div class="grid"><div class="card span7"><div class="list">${pickerCard('filters','Input')}${pickerCard('filters','Output',true)}</div><div class="graph" style="margin-top:14px">${state.filters.length ? state.filters.map((node,index) => `<button class="node${index === state.selectedFilter ? ' sel' : ''}" data-filter-index="${index}"><b>${esc(node.name)}</b><br><small>${esc(node.options || 'No options')}</small></button>`).join('<span class="ms">east</span>') : '<div class="empty-state">No filters. Add one to begin.</div>'}</div></div>
+    <div class="card span5"><h2>Selected node</h2>${state.filters[state.selectedFilter] ? `${field('Filter', select('filter-name',['scale','crop','fps','eq','curves','drawtext','overlay','loudnorm','atempo','unsharp'],state.filters[state.selectedFilter].name))}${field('Options', `<textarea id="filter-options" class="mono" rows="7">${esc(state.filters[state.selectedFilter].options)}</textarea>`)}<button class="tonal" id="update-filter">Update node</button><button class="outlined" id="remove-filter">Remove node</button>` : '<div class="empty-state">Select or add a node.</div>'}</div></div>`,
+
+  audio: () => `${pageHead('Audio', 'Extraction & loudness', 'Inspect streams, normalize with loudnorm, or extract a selected stream.', '<button class="filled" id="queue-loudnorm">Queue two-pass normalize</button>')}
+    <div class="grid"><div class="card span6"><h2>Source</h2><div class="list">${pickerCard('audio','Input')}${pickerCard('audio','Output',true)}</div>
+      <div class="two-col" style="margin-top:14px">${field('Integrated loudness (LUFS)', input('audio-lufs',state.form.loudness,'number','min="-70" max="-5" step="0.1"'))}${field('Loudness range',input('audio-lra',state.form.lra,'number','min="1" max="50" step="0.1"'))}${field('True peak (dBTP)',input('audio-tp',state.form.truePeak,'number','min="-9" max="0" step="0.1"'))}</div></div>
+    <div class="card span6"><h2>Extract stream</h2>${field('Stream', select('audio-stream', state.audioStreams.length ? state.audioStreams.map((s) => s.id) : ['0:a:0'], state.form.audioStream))}${field('Output codec',select('audio-codec',['copy','flac','aac','libopus','pcm_s24le'],state.form.audioCodec))}<button class="filled" id="queue-extract">Queue extraction</button><p class="hint">Streams are populated from the selected file's real ffprobe result.</p></div></div>`,
+
+  gif: () => `${pageHead('Stills & loops', 'GIF & thumbnails', 'Queue a palette-based GIF or timestamped thumbnail sequence.', '')}<div class="grid">
+    <div class="card span6"><h2>GIF export</h2><div class="list">${pickerCard('gif','Input')}${pickerCard('gif','Output',true)}</div><div class="two-col">${field('FPS',input('gif-fps',state.form.gifFps,'number','min="1" max="60"'))}${field('Width',input('gif-width',state.form.gifWidth,'number','min="16" max="8192"'))}${field('Palette colors',input('gif-colors',state.form.gifColors,'number','min="2" max="256"'))}</div><button class="filled" id="queue-gif">Queue GIF</button></div>
+    <div class="card span6"><h2>Thumbnails</h2><div class="list">${pickerCard('thumbs','Input')}${pickerCard('thumbs','Output',true)}</div>${field('Interval in seconds',input('thumb-interval',state.form.thumbInterval,'number','min="0.1" max="86400" step="0.1"'))}<button class="filled" id="queue-thumbs">Queue thumbnails</button></div></div>`,
+
+  presets: () => `${pageHead('Reusable settings', 'Presets', 'Saved locally from real configured operations.', '<button class="filled" id="new-preset">Save current convert settings</button>')}<div class="card"><div class="list">${state.presets.length ? state.presets.map((preset,index) => `<div class="list-item"><span class="ms">bookmarks</span><span style="flex:1"><b>${esc(preset.name)}</b><br><small class="mono">${esc(JSON.stringify(preset.values).slice(0,300))}</small></span><button class="tonal preset-use" data-index="${index}">Use</button><button class="outlined preset-edit" data-index="${index}">Rename</button><button class="preset-delete" data-index="${index}" style="color:var(--danger)">Delete</button></div>`).join('') : '<div class="empty-state"><b>No presets saved</b><br><small>Configure Convert, then save a named preset.</small></div>'}</div></div>`,
+
+  inspector: () => `${pageHead('ffprobe', 'Media inspector', 'Inspect a real file and export the exact bounded result.', '<button class="outlined" id="inspect-pick">Choose file</button><button class="filled" id="inspect-run">Inspect</button>')}<div class="grid"><div class="card span4"><h2>Source</h2>${state.inputs.inspector ? `<b>${esc(state.inputs.inspector.name)}</b>` : '<div class="empty-state">No file selected.</div>'}${state.probeError ? `<div class="notice" style="color:var(--danger)">${esc(state.probeError)}</div>` : ''}<div class="dialog-actions"><button class="tonal probe-export" data-format="json">JSON</button><button class="tonal probe-export" data-format="csv">CSV</button><button class="tonal probe-export" data-format="xml">XML</button></div></div>
+    <div class="card span8"><h2>Probe result</h2><pre class="cmd-pre" id="probe-result">${state.probe ? esc(JSON.stringify(state.probe,null,2).slice(0,200000)) : 'Nothing inspected yet.'}</pre></div></div>`,
+
+  hwaccel: () => {
+    const methods = state.catalogs.hwaccels || [];
+    return `${pageHead('Runtime inventory', 'Hardware acceleration', 'Only methods reported by this bundled FFmpeg build are shown.', '<button class="tonal" id="refresh-runtime">Refresh</button>')}<div class="card"><div class="list">${methods.length ? methods.slice(0,200).map((item) => `<div class="list-item"><span class="ms">developer_board</span><b>${esc(typeof item === 'string' ? item : item.name)}</b><small>${esc(typeof item === 'object' ? item.details || item.description || '' : '')}</small></div>`).join('') : `<div class="empty-state"><b>${state.runtime.loading ? 'Loading hardware inventory…' : 'No hardware method reported'}</b><br><small>${esc(state.runtime.error || 'This is not inferred from the computer name or graphics vendor.')}</small></div>`}</div></div>`;
+  },
+
+  streaming: () => `${pageHead('Live output', 'Streaming', 'Configure a real HLS path, RTMP URL, or SRT URL; nothing is preconnected.', '<button class="filled" id="queue-stream">Queue stream</button>')}<div class="grid"><div class="card span6"><div class="list">${pickerCard('streaming','Input')}</div>${field('Mode',select('stream-mode',['hls','rtmp','srt'],state.form.streamMode))}${field('Target path or URL',input('stream-target',state.form.streamTarget,'text','placeholder="Choose HLS output or enter a validated RTMP/SRT target"'))}<button class="outlined" id="stream-output">Choose HLS output</button></div>
+    <div class="card span6"><h2>HLS options</h2><div class="two-col">${field('Segment seconds',input('hls-time',state.form.hlsTime,'number','min="1" max="60"'))}${field('Playlist entries',input('hls-list',state.form.hlsList,'number','min="0" max="10000"'))}</div><div class="empty-state">No target is treated as live or connected until the queued FFmpeg process reports it.</div></div></div>`,
+
+  jobs: () => {
+    const selected = state.jobs.find((job) => job.id === state.selectedJobId) || state.jobs[0];
+    const logs = selected?.logs || [];
+    return `${pageHead('Durable queue', 'Jobs & logs', 'Live process state, progress, exit status, and bounded logs.', '<button class="outlined" id="refresh-jobs">Refresh</button><button class="outlined" id="clear-finished">Clear finished</button>')}<div class="card bulk-bar"><b>${state.selectedJobs.size} selected</b><button id="jobs-select-all">Select all</button><button id="jobs-select-none">Clear</button><button id="jobs-pause">Pause</button><button id="jobs-resume">Resume</button><button id="jobs-back">Move to back</button><button id="jobs-cancel" style="color:var(--danger)">Cancel</button></div>
+      <div class="list">${jobRows(true)}</div><div class="card" style="margin-top:14px"><div class="section-head"><h2>${selected ? esc(selected.label) : 'Job log'}</h2><input id="log-search" placeholder="Filter log lines"></div><div class="log-pane" id="log-pane">${logs.length ? logs.map((line) => `<div>${esc(line)}</div>`).join('') : '<div>No log lines available.</div>'}</div></div>`;
+  },
+
+  composer: () => `${pageHead('Structured argv', 'Command composer', 'One argument per line. The renderer never parses or executes a shell string.', '<button class="filled" id="queue-composer">Queue command</button>')}<div class="grid"><div class="card span5"><div class="list">${pickerCard('composer','Input')}${pickerCard('composer','Output',true)}</div><p class="hint">Blank lines are ignored. Executable names and shell operators are rejected by the builder.</p></div><div class="card span7">${field('Arguments',`<textarea id="composer-args" class="mono" rows="18">${esc(state.form.composerArgs)}</textarea>`)}<pre class="cmd-pre" id="composer-preview"></pre></div></div>`,
+
+  converter: () => `${pageHead('Media conversion', 'File converter', 'Add a real batch, inspect actual media types, choose a supported target, and queue each file.', '<button class="outlined" id="converter-add">Add files</button><button class="filled" id="queue-converter">Queue supported files</button>')}<div class="grid"><div class="card span7"><div class="list">${state.converterFiles.length ? state.converterFiles.map((file,index) => `<div class="list-item"><span class="ms">draft</span><span style="flex:1"><b>${esc(file.name)}</b><br><small>${esc(file.details || file.kind || 'Type will be validated by the runtime')}</small></span><span class="tag${file.supported ? '' : ' idle'}">${file.supported ? 'READY' : 'UNSUPPORTED'}</span><button class="converter-remove" data-index="${index}">×</button></div>`).join('') : '<div class="empty-state"><b>No files added</b><br><small>The runtime performs bounded byte detection; extensions are not trusted.</small></div>'}</div></div><div class="card span5"><h2>Target</h2>${field('Output type',select('converter-target',['mp4','mkv','webm','mp3','flac','wav','png','jpg'],state.form.converterTarget))}<p class="notice">Media conversions may be lossy. Originals remain untouched and each queued result is validated by the runtime.</p></div></div>`,
+
+  settings: () => `${pageHead('Application', 'Settings', 'Execution and appearance preferences persist locally.', '')}<div class="grid"><div class="card span6"><h2>Appearance</h2><div class="seg"><button id="theme-dark" class="${state.theme === 'dark' ? 'active' : ''}">Dark</button><button id="theme-light" class="${state.theme === 'light' ? 'active' : ''}">Light</button></div><button class="tonal" id="logo-settings" style="margin-top:14px">Customize app logo</button></div>
+    <div class="card span6"><h2>Execution</h2>${field('Parallel jobs',input('setting-parallel',state.settings.parallel,'number','min="1" max="8"'))}<label class="check-row"><input id="setting-hardware" type="checkbox"${state.settings.preferHardware ? ' checked' : ''}> Prefer hardware encoders reported by runtime</label><label class="check-row"><input id="setting-passlogs" type="checkbox"${state.settings.keepPassLogs ? ' checked' : ''}> Keep intermediate two-pass logs</label><label class="check-row"><input id="setting-notify" type="checkbox"${state.settings.notifyComplete ? ' checked' : ''}> Notify on job completion</label><button class="filled" id="save-settings">Save execution settings</button></div></div>`
+};
+
+const catalogView = (view) => {
+  const kind = CATALOG_KINDS[view], rows = state.catalogs[kind] || [], error = state.catalogErrors[kind], loading = state.catalogLoading[kind];
+  const label = GROUPS.registry.items.find((item) => item[0] === view)?.[2] || view;
+  return `${pageHead('Bundled runtime inventory', label, 'Entries come directly from the bundled FFmpeg executable.', '<input id="catalog-search" placeholder="Search this inventory"><button class="tonal" id="catalog-refresh">Refresh</button>')}<div id="catalog-results" class="registry-grid">${loading ? '<div class="empty-state">Loading runtime inventory…</div>' : error ? `<div class="empty-state"><b>Inventory unavailable</b><br><small>${esc(error)}</small></div>` : rows.length ? rows.slice(0,2000).map((entry,index) => { const item = typeof entry === 'string' ? { name: entry } : entry; return `<button class="registry-row" data-catalog-index="${index}"><b>${esc(item.name || item.id || item.key || '')}</b><span class="desc">${esc(item.description || item.details || item.flags || '')}</span><span class="tag">${esc(item.type || kind)}</span><span class="ms">tune</span></button>`; }).join('') : '<div class="empty-state"><b>No entries reported</b><br><small>The app does not substitute a fabricated registry.</small></div>'}</div><p class="hint">${rows.length} entries loaded. Search filters this bounded local view.</p>`;
+};
+Object.keys(CATALOG_KINDS).forEach((view) => { VIEWS[view] = () => catalogView(view); });
+VIEWS.matrix = () => `${pageHead('Capability inputs', 'Capability matrix', 'Browse the real codec and container inventories together; compatibility is never guessed.', '<input id="matrix-search" placeholder="Filter both inventories">')}<div class="grid"><div class="card span6"><h2>Codecs reported by build</h2><div id="matrix-codecs" class="list">${(state.catalogs.codecs||[]).slice(0,250).map((entry)=>`<div class="list-item matrix-entry"><b>${esc(typeof entry==='string'?entry:entry.name||entry.id||'')}</b><small>${esc(typeof entry==='object'?entry.description||entry.flags||'':'')}</small></div>`).join('')||'<div class="empty-state">Loading codecs…</div>'}</div></div><div class="card span6"><h2>Formats reported by build</h2><div id="matrix-formats" class="list">${(state.catalogs.formats||[]).slice(0,250).map((entry)=>`<div class="list-item matrix-entry"><b>${esc(typeof entry==='string'?entry:entry.name||entry.id||'')}</b><small>${esc(typeof entry==='object'?entry.description||entry.flags||'':'')}</small></div>`).join('')||'<div class="empty-state">Loading formats…</div>'}</div></div></div>`;
+
+function render() {
+  const group = groupFor(state.view);
+  $('#rail').innerHTML = RAIL.map(([id,icon,label]) => `<button class="rail-item${id === group ? ' active' : ''}" data-group="${id}"><span class="ms">${icon}</span><b>${label}</b></button>`).join('') + '<div class="rail-spacer"></div><button class="rail-item" id="palette-open"><span class="ms">keyboard_command_key</span><b>Commands</b></button>';
+  const version = state.runtime.loading ? 'Checking runtime…' : state.runtime.available ? `FFmpeg ${esc(state.runtime.version || 'ready')}` : 'FFmpeg unavailable';
+  $('#subnav').innerHTML = `<p class="eyebrow">${esc(GROUPS[group].title)}</p><div style="display:grid;gap:3px">${GROUPS[group].items.map(([id,icon,label]) => `<button class="subnav-item${id === state.view ? ' active' : ''}" data-go="${id}"><span class="ms">${icon}</span><span>${esc(label)}</span></button>`).join('')}</div><div class="build-note"><b>${version}</b><br>${esc(state.runtime.error || 'Bundled runtime')}</div>`;
+  $('#tabs').innerHTML = state.tabs.map((tab) => `<button class="tab${(tab.view || tab.id) === state.view ? ' active' : ''}" data-go="${esc(tab.view || tab.id)}" role="tab" data-tab-id="${esc(tab.id)}"><span class="ms">${esc(tab.icon || 'tab')}</span><span>${esc(tab.label)}</span>${tab.pinned ? '<span class="ms">keep</span>' : ''}</button>`).join('') + '<button id="tab-add" title="Open current view as a tab">+</button><button id="tab-list"><span class="ms">menu</span></button><div class="palette-hint" id="palette-open-2">Search everything <b>Ctrl+Shift+F</b></div>';
+  $('#content').innerHTML = (VIEWS[state.view] || VIEWS.overview)(); $('#live-command').textContent = safePreview();
+  document.body.classList.toggle('light', state.theme === 'light');
+  const logo = $('#logo-open'); logo.textContent = state.logo.image ? '' : state.logo.glyph || 'M'; logo.style.backgroundImage = state.logo.image ? `url(${state.logo.image})` : ''; logo.style.backgroundSize = 'cover'; logo.style.backgroundPosition = 'center';
+  applyAppearance();
+  saveUi(); wireView();
+  if (CATALOG_KINDS[state.view] && !state.catalogs[CATALOG_KINDS[state.view]] && !state.catalogLoading[CATALOG_KINDS[state.view]]) loadCatalog(CATALOG_KINDS[state.view]);
+  if (state.view === 'hwaccel' && !state.catalogs.hwaccels && !state.catalogLoading.hwaccels) loadCatalog('hwaccels');
+  if (state.view === 'matrix') ['codecs','formats'].forEach((kind)=>{if(!state.catalogs[kind]&&!state.catalogLoading[kind])loadCatalog(kind);});
+}
+
+const updateForm = (id, key, numeric = false) => {
+  const element = $(`#${id}`); if (!element) return;
+  const handler = () => { state.form[key] = numeric ? Number(element.value) : element.value; saveUi(); updatePreviews(); };
+  element.addEventListener(element.type === 'text' || element.tagName === 'TEXTAREA' ? 'input' : 'change', handler);
+};
+function updatePreviews() {
+  const preview = $('#cmd-pre'); if (preview) preview.textContent = safePreview(); $('#live-command').textContent = safePreview();
+  const composer = $('#composer-preview'); if (composer) {
+    try { composer.textContent = commandPreview(build('composer', composerValues())); }
+    catch (error) { composer.textContent = error.message; }
+  }
+}
+
+function composerValues() {
+  const lines = state.form.composerArgs.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const options = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const name = lines[index];
+    if (name === 'ffmpeg' || name === 'ffmpeg.exe' || /[|;&`]/.test(name)) throw new Error('Composer accepts FFmpeg option rows, not a shell command.');
+    if (!name.startsWith('-')) throw new Error(`Expected an option name, received: ${name}`);
+    const next = lines[index + 1];
+    options.push({ name, value: next && !next.startsWith('-') ? (index += 1, next) : true });
+  }
+  return { inputs: [{ source: state.inputs.composer?.handle }], outputs: [{ target: state.outputs.composer?.handle, options }] };
+}
+
+async function queueLoudnormAnalysis() {
+  const values = { input: state.inputs.audio?.handle, phase: 'analysis', stream: state.form.audioStream, integrated: state.form.loudness, lra: state.form.lra, truePeak: state.form.truePeak };
+  try {
+    const argv = build('loudnorm', values), label = `Analyze loudness · ${state.inputs.audio?.name || 'audio'}`;
+    const jobs = await apiCall('jobs.enqueue', { label, args: runtimeArgs(argv) });
+    const analysis = (Array.isArray(jobs) ? jobs : []).filter((job) => job.label === label).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+    if (!analysis?.id) throw new Error('The analysis job was queued without an identifier.');
+    state.loudnormPending[analysis.id] = { input: state.inputs.audio, output: state.outputs.audio, stream: state.form.audioStream, integrated: state.form.loudness, lra: state.form.lra, truePeak: state.form.truePeak, audioCodec: state.form.audioCodec };
+    notify('Two-pass normalization started','Pass 1 is measuring the selected stream.'); state.view='jobs'; await refreshJobs();
+  } catch (error) { notify('Could not queue loudness analysis',error.message,'error'); }
+}
+
+function loudnormMeasurements(logs) {
+  const text = (logs || []).join('\n'), match = text.match(/\{[\s\S]*"input_i"[\s\S]*?\}/u); if (!match) throw new Error('Pass 1 completed without bounded loudnorm JSON measurements.');
+  const parsed = JSON.parse(match[0]);
+  return { inputI:Number(parsed.input_i), inputLra:Number(parsed.input_lra), inputTp:Number(parsed.input_tp), inputThresh:Number(parsed.input_thresh), targetOffset:Number(parsed.target_offset) };
+}
+
+async function completeLoudnorm(job) {
+  const pending = state.loudnormPending[job.id]; if (!pending || job.status !== 'completed') return;
+  delete state.loudnormPending[job.id];
+  try {
+    const values = { input:pending.input.handle, output:pending.output?.handle, phase:'apply', stream:pending.stream, integrated:pending.integrated, lra:pending.lra, truePeak:pending.truePeak, measurements:loudnormMeasurements(job.logs), audioCodec:pending.audioCodec };
+    const argv = build('loudnorm',values); await apiCall('jobs.enqueue',{label:`Normalize · ${pending.output?.name || 'audio'}`,args:runtimeArgs(argv)}); notify('Pass 2 queued','Measured loudness values were applied to the output job.'); await refreshJobs();
+  } catch (error) { notify('Two-pass normalization stopped',error.message,'error'); }
+}
+
+function wireView() {
+  $$('[data-go]').forEach((button) => button.onclick = () => go(button.dataset.go));
+  $$('[data-group]').forEach((button) => button.onclick = () => go(GROUPS[button.dataset.group].items[0][0]));
+  $$('#palette-open,#palette-open-2').forEach((button) => button.onclick = openPalette);
+  $$('.pick-input').forEach((button) => button.onclick = async () => { const files = await pickFile(button.dataset.slot, { multiple: false, purpose: button.dataset.slot }); if (files.length && ['audio','inspector'].includes(button.dataset.slot)) inspectSelected(button.dataset.slot); });
+  $$('.pick-output').forEach((button) => button.onclick = () => chooseOutput(button.dataset.slot, { purpose: button.dataset.slot }));
+  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-mode','trimMode'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['audio-codec','audioCodec'],['audio-stream','audioStream'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-colors','gifColors',true],['thumb-interval','thumbInterval',true],['stream-mode','streamMode'],['stream-target','streamTarget'],['hls-time','hlsTime',true],['hls-list','hlsList',true],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
+  const trimNegative = $('#trim-negative'); if (trimNegative) trimNegative.onchange = () => { state.form.avoidNegative = trimNegative.checked; saveUi(); };
+
+  $('#queue-convert')?.addEventListener('click', () => enqueue('convert', convertValues(), state.outputs.convert?.name || 'Convert'));
+  $('#queue-trim')?.addEventListener('click', () => enqueue('trim', { input: state.inputs.trim?.handle, output: state.outputs.trim?.handle, start: state.form.trimStart, end: state.form.trimEnd || undefined, mode: state.form.trimMode, avoidNegativeTs: state.form.avoidNegative ? 'make_zero' : 'disabled' }, state.outputs.trim?.name || 'Trim'));
+  $('#queue-filtergraph')?.addEventListener('click', () => enqueue('filtergraph', { input: state.inputs.filters?.handle, output: state.outputs.filters?.handle, videoGraph: state.filters.map((node) => node.options ? `${node.name}=${node.options}` : node.name).join(','), videoCodec: 'libx264', audioCodec: 'aac', crf: state.form.crf, preset: state.form.preset }, state.outputs.filters?.name || 'Filtergraph'));
+  $('#queue-loudnorm')?.addEventListener('click', queueLoudnormAnalysis);
+  $('#queue-extract')?.addEventListener('click', () => enqueue('extract', { input: state.inputs.audio?.handle, streams: [{ selector: state.form.audioStream, output: state.outputs.audio?.handle, codec: state.form.audioCodec }] }, state.outputs.audio?.name || 'Extract audio'));
+  $('#queue-gif')?.addEventListener('click', () => enqueue('gif', { input: state.inputs.gif?.handle, output: state.outputs.gif?.handle, fps: state.form.gifFps, width: state.form.gifWidth, maxColors: state.form.gifColors }, state.outputs.gif?.name || 'GIF'));
+  $('#queue-thumbs')?.addEventListener('click', () => enqueue('thumbnails', { input: state.inputs.thumbs?.handle, outputPattern: state.outputs.thumbs?.handle, mode: 'thumbnail', count: 1 }, state.outputs.thumbs?.name || 'Thumbnail'));
+  $('#queue-stream')?.addEventListener('click', () => enqueue(state.form.streamMode === 'hls' ? 'hls' : 'stream', state.form.streamMode === 'hls' ? { input: state.inputs.streaming?.handle, output: state.outputs.streaming?.handle || state.form.streamTarget, hlsTime: state.form.hlsTime, listSize: state.form.hlsList, videoCodec: 'libx264', audioCodec: 'aac' } : { input: state.inputs.streaming?.handle, target: state.form.streamTarget, format: state.form.streamMode === 'rtmp' ? 'flv' : 'mpegts', videoCodec: 'libx264', audioCodec: 'aac', realtime: true }, `${state.form.streamMode.toUpperCase()} output`));
+  $('#stream-output')?.addEventListener('click', () => chooseOutput('streaming', { purpose: 'streaming', directory: state.form.streamMode === 'hls' }));
+
+  $('#add-filter')?.addEventListener('click', () => { state.filters.push({ name: 'scale', options: '1920:-2' }); state.selectedFilter = state.filters.length - 1; render(); });
+  $$('[data-filter-index]').forEach((button) => button.onclick = () => { state.selectedFilter = Number(button.dataset.filterIndex); render(); });
+  $('#update-filter')?.addEventListener('click', () => { const node = state.filters[state.selectedFilter]; if (!node) return; node.name = bounded($('#filter-name').value, 80); node.options = bounded($('#filter-options').value, 2000); render(); });
+  $('#remove-filter')?.addEventListener('click', () => { state.filters.splice(state.selectedFilter,1); state.selectedFilter = clamp(state.selectedFilter,0,Math.max(0,state.filters.length-1)); render(); });
+
+  $('#save-convert-preset')?.addEventListener('click', savePreset); $('#new-preset')?.addEventListener('click', savePreset);
+  $$('.preset-use').forEach((button) => button.onclick = () => { Object.assign(state.form,state.presets[Number(button.dataset.index)]?.values || {}); go('convert'); });
+  $$('.preset-edit').forEach((button) => button.onclick = () => { const preset = state.presets[Number(button.dataset.index)]; if (!preset) return; const name = prompt('Preset name',preset.name); if (name?.trim()) { preset.name = bounded(name.trim(),100); render(); } });
+  $$('.preset-delete').forEach((button) => button.onclick = () => openConfirm('Delete this preset?', 'This removes the selected local preset.', () => { state.presets.splice(Number(button.dataset.index),1); render(); }));
+
+  $('#inspect-pick')?.addEventListener('click', async () => { const files = await pickFile('inspector',{multiple:false,purpose:'probe'}); if (files.length) inspectSelected('inspector'); });
+  $('#inspect-run')?.addEventListener('click', () => inspectSelected('inspector')); $$('.probe-export').forEach((button) => button.onclick = () => exportProbe(button.dataset.format));
+  $('#refresh-runtime')?.addEventListener('click', refreshRuntime); $('#refresh-jobs')?.addEventListener('click', refreshJobs);
+  $('#catalog-refresh')?.addEventListener('click', () => loadCatalog(CATALOG_KINDS[state.view],true)); $('#catalog-search')?.addEventListener('input', filterCatalog);
+  $('#matrix-search')?.addEventListener('input',(event)=>{$$('.matrix-entry').forEach((row)=>{row.hidden=!row.textContent.toLowerCase().includes(event.target.value.toLowerCase());});});
+  $$('[data-catalog-index]').forEach((button) => button.onclick = () => openCatalogHelp(CATALOG_KINDS[state.view],Number(button.dataset.catalogIndex)));
+
+  $$('.job-select').forEach((check) => check.onchange = () => { check.checked ? state.selectedJobs.add(check.dataset.jobId) : state.selectedJobs.delete(check.dataset.jobId); render(); });
+  $$('.job-focus').forEach((button) => button.onclick = () => { state.selectedJobId = button.dataset.jobId; render(); });
+  $('#jobs-select-all')?.addEventListener('click', () => { state.jobs.forEach((job) => state.selectedJobs.add(job.id)); render(); }); $('#jobs-select-none')?.addEventListener('click', () => { state.selectedJobs.clear(); render(); });
+  $('#jobs-pause')?.addEventListener('click', () => runJobAction('pause')); $('#jobs-resume')?.addEventListener('click', () => runJobAction('resume'));
+  $('#jobs-cancel')?.addEventListener('click', () => openConfirm('Cancel selected jobs?', 'Running processes will receive a graceful cancellation request.', () => runJobAction('cancel')));
+  $('#jobs-back')?.addEventListener('click', moveSelectedToBack); $('#clear-finished')?.addEventListener('click', clearFinished); $('#log-search')?.addEventListener('input', filterLogs);
+
+  const composer = $('#composer-args'); if (composer) { composer.oninput = () => { state.form.composerArgs = composer.value.slice(0,20000); saveUi(); updatePreviews(); }; updatePreviews(); }
+  $('#queue-composer')?.addEventListener('click', () => enqueue('composer', composerValues(), state.outputs.composer?.name || 'Composed command'));
+  $('#converter-add')?.addEventListener('click', addConverterFiles); $('#queue-converter')?.addEventListener('click', queueConverterFiles);
+  $$('.converter-remove').forEach((button) => button.onclick = () => { state.converterFiles.splice(Number(button.dataset.index),1); render(); });
+
+  $('#copy-current-command')?.addEventListener('click', () => navigator.clipboard.writeText(safePreview()).then(() => notify('Copied','Command preview copied.')).catch((error) => notify('Copy failed',error.message,'error')));
+  $('#theme-dark')?.addEventListener('click', () => { state.theme = 'dark'; render(); }); $('#theme-light')?.addEventListener('click', () => { state.theme = 'light'; render(); }); $('#logo-settings')?.addEventListener('click', openLogo);
+  $('#save-settings')?.addEventListener('click', () => { state.settings.parallel = clamp($('#setting-parallel').value,1,8); state.settings.preferHardware = $('#setting-hardware').checked; state.settings.keepPassLogs = $('#setting-passlogs').checked; state.settings.notifyComplete = $('#setting-notify').checked; saveUi(); notify('Settings saved','Execution preferences are now active.'); render(); });
+}
+
+const go = (view) => { state.view = VIEWS[view] ? view : 'overview'; render(); };
+function savePreset() {
+  const name = prompt('Preset name', `Convert ${state.form.codec}`); if (!name?.trim()) return;
+  const values = ['codec','container','crf','preset','tune','width','height','fps'].reduce((result,key) => { result[key] = state.form[key]; return result; },{});
+  state.presets.push({ id: crypto.randomUUID?.() || String(Date.now()), name: bounded(name.trim(),100), values }); state.presets = state.presets.slice(-200); render();
+}
+
+async function inspectSelected(slot) {
+  const file = state.inputs[slot]; if (!file) return notify('Choose a file','A real input is required before inspection.','error');
+  state.probeError = '';
+  try {
+    const result = await apiCall('probe.inspect', file.handle); state.probe = result;
+    const streams = Array.isArray(result?.streams) ? result.streams : [];
+    state.audioStreams = streams.filter((stream) => stream.codec_type === 'audio').slice(0,128).map((stream,index) => ({ id: stream.specifier || `0:a:${index}`, codec: stream.codec_name || '' }));
+  } catch (error) { state.probe = null; state.probeError = error.message; }
+  render();
+}
+async function exportProbe(format) {
+  if (!state.probe || !state.inputs.inspector) return notify('Nothing to export','Inspect a file first.','error');
+  try {
+    const destination = normalizeFiles(await apiCall('files.save',{suggestedName:`probe.${format}`,filters:[{name:format.toUpperCase(),extensions:[format]}]}))[0]; if (!destination) return;
+    await apiCall('probe.export', { fileHandle: state.inputs.inspector.handle, destinationHandle: destination.handle, format }); notify('Export complete',`${format.toUpperCase()} probe data saved.`);
+  }
+  catch (error) { notify('Export failed',error.message,'error'); }
+}
+async function loadCatalog(kind, force = false) {
+  if (!kind || (state.catalogLoading[kind] && !force)) return;
+  state.catalogLoading[kind] = true; delete state.catalogErrors[kind]; render();
+  try { const result = await apiCall('catalog.list', kind); state.catalogs[kind] = (Array.isArray(result) ? result : result?.entries || result?.items || []).slice(0,10000); }
+  catch (error) { state.catalogErrors[kind] = error.message; state.catalogs[kind] = []; }
+  state.catalogLoading[kind] = false; render();
+}
+function filterCatalog() {
+  const query = bounded($('#catalog-search').value,500).toLowerCase(); $$('.registry-row','#catalog-results').forEach((row) => { row.hidden = !row.textContent.toLowerCase().includes(query); });
+}
+async function openCatalogHelp(kind,index) {
+  const entry = state.catalogs[kind]?.[index], name = typeof entry === 'string' ? entry : entry?.name || entry?.id || entry?.key; if (!name) return;
+  const helpKind = kind === 'codecs' ? ((entry?.flags || '').includes('E') ? 'encoder' : 'decoder') : kind === 'formats' ? ((entry?.flags || '').includes('E') ? 'muxer' : 'demuxer') : kind === 'protocols' ? 'protocol' : kind === 'bsfs' ? 'bsf' : null;
+  if (!helpKind) return notify('Help unavailable',`This FFmpeg inventory does not expose component help for ${kind}.`);
+  try {
+    const result = await apiCall('catalog.help', helpKind, name);
+    if (window.optionGuides?.openRuntimeHelp) return window.optionGuides.openRuntimeHelp({ kind:helpKind, name, help: result });
+    if (window.optionGuides?.openCatalog) return window.optionGuides.openCatalog({ kind:helpKind, initialItem: name });
+    notify(name,bounded(typeof result === 'string' ? result : JSON.stringify(result),500));
+  } catch (error) { notify('Help unavailable',error.message,'error'); }
+}
+async function runJobAction(action) {
+  const ids = Array.from(state.selectedJobs); if (!ids.length) return notify('No jobs selected','Select at least one job.','error');
+  const results = await Promise.allSettled(ids.map((id) => apiCall(`jobs.${action}`,id))), failed = results.filter((result) => result.status === 'rejected').length;
+  if (failed) notify(`${action} incomplete`,`${failed} of ${ids.length} requests failed.`,'error'); state.selectedJobs.clear(); await refreshJobs();
+}
+async function moveSelectedToBack() {
+  const selected = new Set(state.selectedJobs); if (!selected.size) return notify('No jobs selected','Select at least one job.','error');
+  const order = [...state.jobs.filter((job) => !selected.has(job.id)), ...state.jobs.filter((job) => selected.has(job.id))].map((job) => job.id);
+  try { await apiCall('jobs.reorder',order); state.selectedJobs.clear(); await refreshJobs(); } catch (error) { notify('Reorder failed',error.message,'error'); }
+}
+async function clearFinished() {
+  const ids = state.jobs.filter((job) => ['completed','failed','cancelled','interrupted'].includes(job.status)).map((job) => job.id);
+  if (!ids.length) return notify('Nothing to clear','No finished jobs are present.');
+  openConfirm('Clear finished jobs?',`${ids.length} finished job records will be removed.`,async () => { try { await apiCall('jobs.clear',ids); await refreshJobs(); } catch (error) { notify('Clear failed',error.message,'error'); } });
+}
+function filterLogs() {
+  const selected = state.jobs.find((job) => job.id === state.selectedJobId) || state.jobs[0], query = $('#log-search').value.toLowerCase();
+  $('#log-pane').replaceChildren(...(selected?.logs || []).filter((line) => line.toLowerCase().includes(query)).map((line) => { const div = document.createElement('div'); div.textContent = line; return div; }));
+}
+async function addConverterFiles() {
+  const files = await pickFile(null,{multiple:true,purpose:'converter'});
+  for (const file of files) {
+    try { const probe = await apiCall('probe.inspect',file.handle); file.details = bounded(probe?.format?.format_long_name || probe?.format?.format_name || file.details || 'Media detected by runtime',300); file.supported = true; }
+    catch (error) { file.details = bounded(error.message,300); file.supported = false; }
+    state.converterFiles.push(file);
+  }
+  state.converterFiles = state.converterFiles.slice(0,500); render();
+}
+async function queueConverterFiles() {
+  const files = state.converterFiles.filter((file) => file.supported); if (!files.length) return notify('No supported files','Add at least one media file that the runtime can inspect.','error');
+  const adapters = { mp4:'video/mp4-h264-aac',mkv:'video/mkv-copy',webm:'video/webm-vp9-opus',mp3:'audio/mp3',flac:'audio/flac',wav:'audio/wav-pcm-s24le',png:'image/png',jpg:'image/jpeg' };
+  const adapter = adapters[state.form.converterTarget]; if (!adapter) return notify('Target unavailable',`No bundled adapter is available for ${state.form.converterTarget}.`,'error');
+  let queued = 0;
+  for (const file of files) {
+    try {
+      const stem = file.name.replace(/\.[^.]+$/u,'').slice(0,180) || 'output';
+      const output = normalizeFiles(await apiCall('files.save',{suggestedName:`${stem}.${state.form.converterTarget}`,filters:[{name:state.form.converterTarget.toUpperCase(),extensions:[state.form.converterTarget]}]}))[0];
+      if (!output) continue; state.outputs[`converter-${queued}`]=output;
+      const argv = build('converter',{ input:file.handle, output:output.handle, adapter }); await apiCall('jobs.enqueue',{label:`${file.name} → ${state.form.converterTarget}`,args:runtimeArgs(argv)}); queued += 1;
+    }
+    catch (error) { notify(`Could not queue ${file.name}`,error.message,'error'); }
+  }
+  if (queued) { notify('Batch queued',`${queued} conversion jobs added.`); state.view='jobs'; await refreshJobs(); }
+}
+async function refreshRuntime() {
+  state.runtime.loading = true; state.runtime.error = ''; render();
+  try {
+    const [status,catalog] = await Promise.all([apiCall('runtime.status'),apiCall('runtime.catalog')]);
+    state.runtime = { available: status?.ready === true, loading: false, version: bounded(status?.version || status?.ffmpegVersion || '',100), error: bounded(status?.error || (!status?.ready ? 'Bundled FFmpeg or ffprobe is unavailable.' : ''),500) };
+    state.runtimeCatalog = catalog && typeof catalog === 'object' ? catalog : {};
+  } catch (error) { state.runtime = { available:false,loading:false,version:'',error:error.message }; }
+  render();
+}
+
+function notify(title,body,type='info') {
+  const item = { id: String(Date.now()) + Math.random().toString(16).slice(2), title:bounded(title,100), body:bounded(body,1000), type, at:new Date().toISOString() };
+  state.notifications.unshift(item); state.notifications = state.notifications.slice(0,200); store.set('notifications',state.notifications);
+  const toast = document.createElement('div'); toast.className = 'toast'; const heading = document.createElement('b'); heading.textContent = item.title; const copy = document.createElement('small'); copy.textContent = item.body; toast.append(heading,copy); $('#toast-zone').append(toast); setTimeout(() => toast.remove(), type === 'error' ? 12000 : 6000);
 }
 function openNotifications() {
-  $('#notification-list').innerHTML = NOTIFS.map(([t, b, when]) => `<div class="list-item" style="display:block;border-left:3px solid var(--accent)"><b style="font-size:13px">${esc(t)}</b><br><small>${esc(b)}</small><br><small class="mono" style="font-size:10.5px">${esc(when)}</small></div>`).join('') || '<p class="hint">No notifications.</p>';
-  $('#notification-dialog').showModal();
+  const list = $('#notification-list'), search = $('#notification-search');
+  const draw = () => {
+    const query = search.value.toLowerCase(); list.replaceChildren(); const items = state.notifications.filter((item) => `${item.title} ${item.body}`.toLowerCase().includes(query));
+    if (!items.length) { const empty=document.createElement('p'); empty.className='hint'; empty.textContent='No matching notifications.'; list.append(empty); return; }
+    items.forEach((item) => { const row=document.createElement('div'); row.className='list-item'; const text=document.createElement('span'); text.style.flex='1'; const title=document.createElement('b'); title.textContent=item.title; const body=document.createElement('small'); body.textContent=item.body; const at=document.createElement('small'); at.textContent=item.at; text.append(title,document.createElement('br'),body,document.createElement('br'),at); row.append(text); list.append(row); });
+  };
+  search.value=''; search.oninput=draw; draw(); $('#notification-clear').onclick=()=>openConfirm('Clear notification history?','All locally stored notifications will be removed.',()=>{state.notifications=[];store.set('notifications',[]);draw();}); $('#notification-dialog').showModal();
+}
+function openPalette() {
+  const items = Object.values(GROUPS).flatMap((group) => group.items.map(([id,,label]) => ({label:`Go to ${label}`,sub:group.title,run:()=>go(id)})));
+  items.push({label:'Toggle theme',sub:'Setting',run:()=>{state.theme=state.theme==='dark'?'light':'dark';render();}},{label:'Customize app logo',sub:'Setting',run:openLogo},{label:'Refresh runtime',sub:'Action',run:refreshRuntime});
+  const list=$('#command-list'), search=$('#command-search');
+  const draw=()=>{const q=search.value.toLowerCase(), matches=items.filter((item)=>`${item.label} ${item.sub}`.toLowerCase().includes(q)); list.replaceChildren(...matches.map((item)=>{const button=document.createElement('button');button.className='command';button.type='button';const label=document.createElement('b');label.textContent=item.label;const sub=document.createElement('small');sub.textContent=item.sub;button.append(label,document.createElement('br'),sub);button.onclick=()=>{$('#command-dialog').close();item.run();};return button;}));};
+  search.value=''; search.oninput=draw; draw(); $('#command-dialog').showModal(); search.focus();
+}
+
+let confirmAction = null;
+function openConfirm(title,copy,onConfirm) {
+  const dialog=$('#confirm-dialog'), keys={a:false,l:false}, slider=$('#confirm-slider'), goButton=$('#confirm-go'); confirmAction=onConfirm;
+  $('#confirm-title').textContent=title; $('#confirm-copy').textContent=copy; slider.value=0; slider.disabled=true; goButton.disabled=true; $('#confirm-progress').style.width='0%';
+  $$('.key-row button',dialog).forEach((button)=>{button.classList.remove('ready');button.onclick=()=>{keys[button.dataset.key]=true;button.classList.add('ready');slider.disabled=!(keys.a&&keys.l);};});
+  slider.oninput=()=>{$('#confirm-progress').style.width=`${slider.value}%`;goButton.disabled=Number(slider.value)<100;};
+  goButton.onclick=(event)=>{event.preventDefault();dialog.close();const action=confirmAction;confirmAction=null;if(action)action();}; dialog.showModal();
+}
+function openLogo() {
+  const presets=$('#logo-presets'); presets.replaceChildren(...['M','F','▶','◆'].map((glyph)=>{const button=document.createElement('button');button.type='button';button.textContent=glyph;button.className='logo-preset';button.onclick=()=>{state.logo={glyph,image:''};render();openLogo();};return button;}));
+  $('#logo-upload').onchange=async(event)=>{const file=event.target.files?.[0];if(!file)return;if(file.size>1048576||!['image/png','image/svg+xml'].includes(file.type))return notify('Logo rejected','Choose a PNG or SVG no larger than 1 MB.','error');const reader=new FileReader();reader.onload=()=>{state.logo={glyph:'',image:String(reader.result)};render();notify('Logo applied','The local image now appears in app chrome.');};reader.onerror=()=>notify('Logo failed','The selected file could not be read.','error');reader.readAsDataURL(file);};
+  $('#logo-reset').onclick=(event)=>{event.preventDefault();state.logo={glyph:'M',image:''};render();openLogo();}; $('#logo-dialog').showModal();
+}
+function applyAppearance() {
+  const appearance=state.settings.appearance||{};const root=document.documentElement;
+  root.style.setProperty('--accent',appearance.accent||'');root.style.fontSize=`${clamp(appearance.scale||1,.9,1.3)*14}px`;document.body.style.fontFamily=appearance.font||'';document.body.style.fontWeight=String(clamp(appearance.weight||400,300,700));
+}
+function openAppearance(target='Application') {
+  const appearance=state.settings.appearance||{};$('#appearance-target').textContent=`Target: ${target}`;$('#appearance-theme').value=state.theme;$('#appearance-accent').value=appearance.accent||'#82d5cc';$('#appearance-font').value=appearance.font||'Segoe UI';$('#appearance-scale').value=appearance.scale||1;$('#appearance-weight').value=appearance.weight||400;$('#appearance-dialog').showModal();
 }
 function openTabManager() {
-  $('#tab-manager-list').innerHTML = [['Overview', 'pinned · Home', 'Unpin'], ['Convert — libx264', 'Media · modified', 'Pin'], ['Filtergraph', 'Media', 'Pin'], ['Jobs & logs', 'Home', 'Pin']].map(([l, s, p]) => `
-    <div class="list-item"><span style="flex:1;min-width:0"><b style="font-size:13px">${l}</b><br><small>${s}</small></span>
-    <select style="background:var(--surface3);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:8px"><option>Home</option><option>Encoding</option><option>No group</option></select>
-    <button class="tonal" style="padding:8px 12px;font-size:12px">${p}</button><button style="color:var(--danger);padding:6px">×</button></div>`).join('');
+  const list=$('#tab-manager-list');
+  const draw=()=>{const query=$('#tab-current-search').value.toLowerCase();list.replaceChildren();state.tabs.filter((tab)=>`${tab.label} ${tab.group}`.toLowerCase().includes(query)).forEach((tab)=>{const row=document.createElement('div');row.className='list-item';const label=document.createElement('b');label.textContent=tab.label;label.style.flex='1';const pin=document.createElement('button');pin.textContent=tab.pinned?'Unpin':'Pin';pin.onclick=()=>{tab.pinned=!tab.pinned;saveUi();draw();};const group=document.createElement('input');group.value=tab.group||'';group.setAttribute('aria-label',`Group for ${tab.label}`);group.onchange=()=>{tab.group=bounded(group.value,80);saveUi();};const close=document.createElement('button');close.textContent='×';close.disabled=tab.pinned;close.onclick=()=>{state.tabs=state.tabs.filter((item)=>item.id!==tab.id);saveUi();draw();render();};row.append(label,group,pin,close);list.append(row);});};
+  $('#tab-current-search').value='';$('#tab-current-search').oninput=draw;$('#tab-master-search').oninput=draw;draw();
+  const containing=$('#tab-close-containing'), excluding=$('#tab-close-not-containing'), preview=$('#tab-close-preview'), apply=$('#apply-tab-close'); let previewIds=[];
+  $('#preview-tab-close').onclick=()=>{const inc=containing.value.trim().toLowerCase(),exc=excluding.value.trim().toLowerCase();previewIds=state.tabs.filter((tab)=>!tab.pinned&&((inc&&tab.label.toLowerCase().includes(inc))||(exc&&!tab.label.toLowerCase().includes(exc)))).map((tab)=>tab.id);preview.textContent=`${previewIds.length} unpinned tabs would close.`;apply.disabled=!previewIds.length;};
+  apply.onclick=()=>openConfirm('Close previewed tabs?',`${previewIds.length} unpinned tabs will close.`,()=>{state.tabs=state.tabs.filter((tab)=>!previewIds.includes(tab.id));saveUi();draw();render();});
   $('#tab-dialog').showModal();
 }
-function toast(title, body) {
-  const el = document.createElement('div'); el.className = 'toast';
-  el.innerHTML = `<b style="display:block">${esc(title)}</b><small>${esc(body)}</small>`;
-  $('#toast-zone').append(el); setTimeout(() => el.remove(), 6000);
+
+const REGEX_TOKENS = ['\\d','\\w','\\s','[a-z]','^','$','+','*','?','{2,4}','|','()','(?:)','\\b','.','\\.'];
+function openRegex() {
+  const dialog=$('#regex-dialog'), pattern=$('#regex-pattern'), flags=$('#regex-flags'), sample=$('#regex-sample'), preview=$('#regex-preview');
+  $('#regex-tokens').replaceChildren(...REGEX_TOKENS.map((token)=>{const button=document.createElement('button');button.type='button';button.className='tok-btn';button.textContent=token;button.onclick=()=>{pattern.value+=token;update();};return button;}));
+  $('#regex-recipes').replaceChildren(); $('#regex-flag-btns').replaceChildren(...['i','g','m','u'].map((flag)=>{const button=document.createElement('button');button.type='button';button.className=`flag-btn${flags.value.includes(flag)?' active':''}`;button.textContent=flag;button.onclick=()=>{flags.value=flags.value.includes(flag)?flags.value.replace(flag,''):flags.value+flag;openRegex();};return button;}));
+  const update=()=>{try{const re=new RegExp(pattern.value,flags.value.replace('g',''));const words=sample.value.split(/\s+/).filter((word)=>re.test(word));preview.textContent=words.length?`Matches: ${words.join(', ')}`:'No matches in sample.';$('#regex-explain').textContent='Pattern is valid and evaluated locally.';}catch(error){preview.textContent=`Invalid pattern: ${error.message}`;$('#regex-explain').textContent='Fix the pattern before applying it.';}};
+  pattern.oninput=update;sample.oninput=update;update();if(!dialog.open)dialog.showModal();
 }
 
-/* ---------- global chrome ---------- */
-$$('.title-actions [data-window]').forEach((b) => b.addEventListener('click', () => window.api && window.api.window[b.dataset.window]()));
-$('#theme-toggle').addEventListener('click', () => { state.theme = state.theme === 'dark' ? 'light' : 'dark'; render(); });
-$('#notification-open').addEventListener('click', openNotifications);
-$('#logo-open').addEventListener('click', openLogo);
-$('#open-composer').addEventListener('click', () => go('composer'));
-document.addEventListener('click', (e) => { const t = e.target.closest('#tab-list'); if (t) openTabManager(); });
-window.addEventListener('keydown', (e) => { if (e.ctrlKey && e.shiftKey && (e.key === 'F' || e.key === 'f')) { e.preventDefault(); openPalette(); } });
-if (window.api) window.api.onLog(({ line }) => { const pane = $('#log-pane'); if (pane) { const d = document.createElement('div'); d.textContent = line; pane.append(d); pane.scrollTop = pane.scrollHeight; } });
+function filterJobEvent(payload) {
+  if (!payload) return;
+  if (Array.isArray(payload.jobs)) state.jobs=payload.jobs.slice(0,1000).map(normalizeJob);
+  else { const raw=payload.job||payload, normalized=normalizeJob(raw,0), index=state.jobs.findIndex((job)=>job.id===normalized.id); if(index>=0)state.jobs[index]=normalized; else state.jobs.unshift(normalized); completeLoudnorm(normalized); }
+  const raw=payload.job||payload;
+  if(state.settings.notifyComplete&&['completed','failed','cancelled','interrupted'].includes(raw.status)) notify('Job updated',`${raw.label||'Job'}: ${raw.status}`,raw.status==='failed'?'error':'info');
+  render();
+}
 
-window.state = state; window.save = save; window.render = render; window.openRegex = openRegex;
-render();
+$('#theme-toggle').onclick=()=>{state.theme=state.theme==='dark'?'light':'dark';render();}; $('#notification-open').onclick=openNotifications; $('#logo-open').onclick=openLogo; $('#open-composer').onclick=()=>go('composer');
+$('#copy-command').onclick=()=>navigator.clipboard.writeText($('#live-command').textContent).then(()=>notify('Copied','Command preview copied.')).catch((error)=>notify('Copy failed',error.message,'error'));
+$$('.title-actions [data-window]').forEach((button)=>button.onclick=()=>window.api?.window?.[button.dataset.window]?.());
+document.addEventListener('click',(event)=>{if(event.target.closest('#tab-list'))openTabManager();if(event.target.closest('#tab-add')){const current=Object.values(GROUPS).flatMap((group)=>group.items).find((item)=>item[0]===state.view);if(current&&!state.tabs.some((tab)=>tab.id===state.view)){state.tabs.push({id:state.view,label:current[2],icon:current[1],pinned:false,group:GROUPS[groupFor(state.view)].title});render();}}});
+document.addEventListener('contextmenu',(event)=>{const tab=event.target.closest('.tab');if(!tab)return;event.preventDefault();const id=tab.dataset.tabId,item=state.tabs.find((entry)=>entry.id===id),menu=$('#ctx-menu');menu.replaceChildren();const header=document.createElement('header');header.textContent=item?.label||'Tab';menu.append(header);[['Pin or unpin',()=>{item.pinned=!item.pinned;render();}],['Duplicate',()=>{if(!state.tabs.some((entry)=>entry.id===`${id}-copy`))state.tabs.push({...item,id:`${id}-copy`,view:item.view||item.id,label:`${item.label} copy`,pinned:false});render();}],['Move to group',openTabManager],['Edit appearance',()=>openAppearance(item.label)],['Close',()=>{if(!item.pinned){state.tabs=state.tabs.filter((entry)=>entry!==item);render();}}]].forEach(([label,run])=>{const button=document.createElement('button');button.textContent=label;button.onclick=()=>{menu.hidden=true;run();};menu.append(button);});menu.hidden=false;menu.style.left=`${Math.min(event.clientX,innerWidth-250)}px`;menu.style.top=`${Math.min(event.clientY,innerHeight-220)}px`;});
+document.addEventListener('click',(event)=>{if(!event.target.closest('#ctx-menu'))$('#ctx-menu').hidden=true;});
+$$('.builder-button').forEach((button)=>button.onclick=(event)=>{event.preventDefault();openRegex();});
+$('#appearance-apply').onclick=(event)=>{event.preventDefault();state.theme=$('#appearance-theme').value;state.settings.appearance={accent:$('#appearance-accent').value,font:$('#appearance-font').value,scale:Number($('#appearance-scale').value),weight:Number($('#appearance-weight').value),radius:Number($('#appearance-radius').value)};saveUi();$('#appearance-dialog').close();render();};
+$('#appearance-reset').onclick=()=>{delete state.settings.appearance;saveUi();applyAppearance();$('#appearance-dialog').close();render();};
+window.addEventListener('keydown',(event)=>{if(event.ctrlKey&&event.shiftKey&&event.key.toLowerCase()==='f'){event.preventDefault();openPalette();}});
+
+async function initialize() {
+  render(); await Promise.all([refreshRuntime(),refreshJobs()]);
+  try { const unsubscribe=window.api?.jobs?.onEvent?.(filterJobEvent); if(typeof unsubscribe==='function')window.addEventListener('beforeunload',unsubscribe,{once:true}); }
+  catch(error){notify('Live job updates unavailable',error.message,'error');}
+}
+window.state=state; window.save=saveUi; window.render=render; window.openRegex=openRegex; initialize();

@@ -1,4 +1,4 @@
-:root{color-scheme:dark;--bg:#101416;--surface:#171c1e;--surface2:#20282a;--surface3:#293234;--text:#e4eeee;--muted:#aab9b9;--line:#3c494a;--accent:#82d5cc;--on-accent:#003733;--tonal:#274946;--danger:#ffb4ab;--chipbg:#284442;--titlebg:#0d1112;--railbg:#13191a;--tabsbg:#141a1b;--mono:'Roboto Mono','Consolas',monospace;font:14px/1.45 "Google Sans","Roboto","Segoe UI",sans-serif}
+:root{color-scheme:dark;--bg:#101416;--surface:#171c1e;--surface2:#20282a;--surface3:#293234;--text:#e4eeee;--muted:#aab9b9;--line:#3c494a;--accent:#82d5cc;--on-accent:#003733;--tonal:#274946;--danger:#ffb4ab;--chipbg:#284442;--titlebg:#0d1112;--railbg:#13191a;--tabsbg:#141a1b;--mono:"Cascadia Mono","Consolas",monospace;font:14px/1.45 "Segoe UI Variable Text","Segoe UI",sans-serif}
 body.light{color-scheme:light;--bg:#f6faf9;--surface:#fff;--surface2:#e8f0ef;--surface3:#dce8e6;--text:#172020;--muted:#536261;--line:#aabbb9;--accent:#006a63;--on-accent:#fff;--tonal:#cce8e4;--danger:#93000a;--chipbg:#cce8e4;--titlebg:#e4efed;--railbg:#eef5f4;--tabsbg:#e9f1f0}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--text);min-width:1240px;overflow:hidden}
@@ -9,7 +9,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 input[type=range]{accent-color:var(--accent)}
 input[type=checkbox]{accent-color:var(--accent);width:17px;height:17px}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--surface3);border-radius:8px}
-.ms{font-family:'Material Symbols Outlined';font-weight:normal;font-style:normal;display:inline-block;line-height:1;vertical-align:middle;-webkit-user-select:none;user-select:none}
+.ms{font-family:'Material Symbols Outlined','Segoe UI Symbol';font-weight:normal;font-style:normal;display:inline-block;line-height:1;vertical-align:middle;-webkit-user-select:none;user-select:none}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
 .titlebar{height:44px;display:flex;align-items:center;padding:0 14px;background:var(--titlebg);border-bottom:1px solid var(--line);-webkit-app-region:drag}
@@ -75,7 +75,7 @@ h3{margin:0 0 6px;font-size:15px}
 .mono{font-family:var(--mono)}
 
 .field{display:grid;gap:5px;font-size:12px;font-weight:600;color:var(--muted)}
-.field input,.field select{background:var(--surface2);border:1px solid var(--line);border-radius:11px;color:var(--text);padding:10px 12px;width:100%}
+.field input,.field select,.field textarea{background:var(--surface2);border:1px solid var(--line);border-radius:11px;color:var(--text);padding:10px 12px;width:100%;resize:vertical}
 .check-row{display:flex;gap:10px;align-items:center;padding:9px 12px;border-radius:11px;background:var(--surface2);cursor:pointer;font-size:12px;color:var(--muted)}
 .check-row b{font-family:var(--mono);font-size:12.5px;color:var(--text)}
 .slider-head{display:flex;justify-content:space-between;font-size:12.5px;font-weight:600;color:var(--muted)}
@@ -145,3 +145,8 @@ dialog::backdrop{background:#0009;backdrop-filter:blur(3px)}
 .flag-btn{border:1px solid var(--line);border-radius:9px;width:34px;height:34px;font-family:var(--mono);font-weight:800;color:var(--muted)}
 .flag-btn.active{border-color:var(--accent);background:var(--tonal);color:var(--accent)}
 .view-search{display:flex;gap:5px;align-items:center;margin:-8px 0 20px}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.section-head h2{margin:0}
+.bulk-bar{display:flex;align-items:center;gap:8px;margin-bottom:12px;padding:10px 14px;flex-wrap:wrap}.bulk-bar button{padding:7px 11px;border-radius:18px;background:var(--surface2)}
+.empty-state{padding:24px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:12px}.empty-state b{color:var(--text)}
+.registry-grid{display:grid;gap:7px}.job-row{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto auto;align-items:center}.logo-preset{width:48px;height:48px;border-radius:14px;background:var(--surface2);border:1px solid var(--line);font-weight:800}
+@media(max-width:1280px){.page{padding:20px}.subnav{width:190px}.span3{grid-column:span 6}.span4,.span5,.span7,.span8{grid-column:span 6}}

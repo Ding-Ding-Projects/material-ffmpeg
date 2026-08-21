@@ -18,6 +18,8 @@ Important handoff records are:
 
 Expected release assets are a setup executable, `RELEASES`, a full `.nupkg`, and `SHA256SUMS.txt`.
 
+The internal trusted-runtime diagnostic records the exact flat executable layout: packaged builds resolve `process.resourcesPath/ffmpeg/ffmpeg.exe` and `process.resourcesPath/ffmpeg/ffprobe.exe`; development builds resolve `<repositoryRoot>/resources/ffmpeg/ffmpeg.exe` and `<repositoryRoot>/resources/ffmpeg/ffprobe.exe`. It has no `bin` fallback, no `PATH` search, and no caller-selected executable input. `src/runtime/safe-process.js` consumes this resolver and returns only bounded, path-free status metadata across the renderer boundary.
+
 ## Failure modes
 
 A handoff is incomplete when it names a source commit that differs from the package metadata, reports a build without the corresponding artifacts, treats a workflow still running as successful, or describes a feature as working only because its controls exist. A release that lacks bundled FFmpeg/FFprobe, upstream license information, source metadata, or unsigned-state evidence is also incomplete.
@@ -28,7 +30,7 @@ Never place credentials, tokens, selected local paths, media contents, or privat
 
 ## Verification state
 
-The prior speed handoff explicitly recorded no lint, tests, accessibility checks, screenshots, package build, or installer execution. This documentation pass likewise performs source inspection and documentation only. The release candidate, packaged runtime, interaction evidence, and public assets require independent verification at the final integrated commit.
+The prior speed handoff explicitly recorded no lint, tests, accessibility checks, screenshots, package build, or installer execution. This repair performed source inspection and directly invoked the previously packaged flat-layout FFmpeg and FFprobe binaries, both of which reported version 9.0.1. It did not build a new package, interact with the packaged application, or take a screenshot. The release candidate, packaged runtime interaction, and public assets require independent verification at the final integrated commit.
 
 ## Suggested articles
 

@@ -42,6 +42,10 @@ class RuntimeService {
       ffmpegAvailable: installed.ffmpeg,
       ffprobeAvailable: installed.ffprobe,
       origin: 'bundled',
+      locationMode: installed.mode,
+      locationRootId: installed.rootId,
+      locationsChecked: installed.locationsChecked,
+      reasonId: error ? 'TRUSTED_RUNTIME_EXECUTION_FAILED' : installed.reasonId,
       version,
       error
     };

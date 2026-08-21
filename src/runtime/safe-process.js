@@ -3,6 +3,10 @@
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
+const {
+  enumerateTrustedExecutableLocations,
+  inspectTrustedExecutableLocations
+} = require('./trusted-executable-locations');
 
 const MAX_ARGS = 256;
 const MAX_ARG_LENGTH = 8192;
@@ -11,22 +15,19 @@ const PATH_VALUE_OPTIONS = /^(?:-\/|-filter_script|-filter_complex_script|-attac
 const WINDOWS_ABSOLUTE = /^(?:[a-z]:[\\/]|\\\\|\\\\\?\\)/i;
 
 function resolveExecutables(app) {
-  const root = app.isPackaged
-    ? path.join(process.resourcesPath, 'ffmpeg', 'bin')
-    : path.join(__dirname, '..', '..', 'resources', 'ffmpeg', 'bin');
-  return Object.freeze({
-    root,
-    ffmpeg: path.join(root, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'),
-    ffprobe: path.join(root, process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe')
-  });
+  return enumerateTrustedExecutableLocations(app);
 }
 
 function executableStatus(executables) {
+  const status = inspectTrustedExecutableLocations(executables);
   return {
-    root: executables.root,
-    ffmpeg: fs.existsSync(executables.ffmpeg),
-    ffprobe: fs.existsSync(executables.ffprobe),
-    ready: fs.existsSync(executables.ffmpeg) && fs.existsSync(executables.ffprobe)
+    mode: status.mode,
+    rootId: status.rootId,
+    reasonId: status.reasonId,
+    locationsChecked: status.locationsChecked,
+    ffmpeg: status.ffmpeg.regularFile,
+    ffprobe: status.ffprobe.regularFile,
+    ready: status.ready
   };
 }
 

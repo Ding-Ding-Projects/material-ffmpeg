@@ -41,13 +41,13 @@ foreach ($relativePath in $paths) {
   $rows[$category].Total += $total
   $rows[$category].NonBlank += $nonBlank
 
-  $authors = & git -C $repoRoot blame --line-porcelain HEAD -- $relativePath 2>$null | Where-Object { $_ -like 'author *' }
+  $authors = @(& git -C $repoRoot blame --line-porcelain HEAD -- $relativePath 2>$null | Where-Object { $_ -like 'author *' })
   if ($authors.Count -eq $total) {
     foreach ($author in $authors) {
       if ($author -eq 'author Claude Fable 5') { $agentLines += 1 } else { $peopleLines += 1 }
     }
   } else {
-    throw "Attribution count mismatch for $relativePath: $($authors.Count) blame lines versus $total file lines."
+    throw "Attribution count mismatch for ${relativePath}: $($authors.Count) blame lines versus $total file lines."
   }
 }
 

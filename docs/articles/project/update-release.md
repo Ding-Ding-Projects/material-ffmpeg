@@ -8,6 +8,8 @@ The immutable installer URL is [material-ffmpeg-setup-0.1.502.exe](https://githu
 
 Every push and manual dispatch runs the direct `Build, release, and deploy Pages` workflow.
 
+Before configuring, uploading, or deploying Pages, the website job fetches `origin/main` and compares it with the workflow SHA. All three publication steps run only when the values still match. An older workflow that finishes after a newer commit therefore records a successful stale-source skip instead of replacing the newer website.
+
 ## Behavior
 
 The Windows job restores dependencies, assigns a unique `0.1.<run>` version, builds unsigned Squirrel.Windows artifacts, validates and collects release files, records the repository line count, writes measured release notes, publishes one non-draft release, and reads its identity and assets back. A dependent Ubuntu job deploys `docs/` to GitHub Pages.

@@ -18,13 +18,43 @@ function Get-Category([string]$Path) {
   return 'Project records'
 }
 
+function Get-HeadBlobBytes([string]$Path) {
+  $treeEntry = @(& git -C $repoRoot ls-tree HEAD -- $Path)
+  if ($LASTEXITCODE -ne 0) { throw "git ls-tree failed for ${Path}." }
+  if ($treeEntry.Count -eq 0) { throw "HEAD does not contain tracked path ${Path}." }
+  if ($treeEntry[0] -notmatch '^(?<mode>\d{6})\s+(?<type>\w+)\s+(?<oid>[0-9a-f]{40,64})\t') {
+    throw "Unable to parse the HEAD tree entry for ${Path}."
+  }
+  if ($Matches.type -ne 'blob') { return $null }
+
+  $startInfo = New-Object Diagnostics.ProcessStartInfo
+  $startInfo.FileName = (Get-Command git.exe).Source
+  $startInfo.Arguments = "cat-file blob $($Matches.oid)"
+  $startInfo.WorkingDirectory = $repoRoot
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::Start($startInfo)
+  $memory = New-Object IO.MemoryStream
+  try {
+    $process.StandardOutput.BaseStream.CopyTo($memory)
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) { throw "git cat-file failed for ${Path}: $stderr" }
+    return ,$memory.ToArray()
+  } finally {
+    $memory.Dispose()
+    $process.Dispose()
+  }
+}
+
 $rows = @{}
 $agentLines = 0
 $peopleLines = 0
 foreach ($relativePath in $paths) {
-  $absolutePath = Join-Path $repoRoot $relativePath
-  if (-not (Test-Path -LiteralPath $absolutePath -PathType Leaf)) { continue }
-  $bytes = [IO.File]::ReadAllBytes($absolutePath)
+  $bytes = Get-HeadBlobBytes $relativePath
+  if ($null -eq $bytes) { continue }
   if ($bytes -contains 0) { continue }
   $text = [Text.Encoding]::UTF8.GetString($bytes)
   if ($text.Length -eq 0) {

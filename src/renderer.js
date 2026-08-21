@@ -18,6 +18,31 @@ const DEFAULT_TABS = [
   { id: 'jobs', label: 'Jobs & logs', icon: 'receipt_long', pinned: false, group: 'Home' }
 ];
 
+const FUNNY_LEVEL_DEFAULT = 5;
+const DEFAULT_SETTINGS = Object.freeze({
+  parallel: 2,
+  preferHardware: true,
+  keepPassLogs: false,
+  notifyComplete: true,
+  englishFunny: FUNNY_LEVEL_DEFAULT,
+  cantoneseFunny: FUNNY_LEVEL_DEFAULT
+});
+const normalizeFunnyLevel = (value) => {
+  const level = Number(value);
+  return Number.isInteger(level) && level >= 1 && level <= 5 ? level : FUNNY_LEVEL_DEFAULT;
+};
+const normalizeSettings = (value) => {
+  const input = value && typeof value === 'object' ? value : {};
+  return Object.assign({}, DEFAULT_SETTINGS, input, {
+    parallel: clamp(input.parallel ?? DEFAULT_SETTINGS.parallel, 1, 8),
+    preferHardware: input.preferHardware !== false,
+    keepPassLogs: Boolean(input.keepPassLogs),
+    notifyComplete: input.notifyComplete !== false,
+    englishFunny: normalizeFunnyLevel(input.englishFunny),
+    cantoneseFunny: normalizeFunnyLevel(input.cantoneseFunny)
+  });
+};
+
 const state = {
   view: 'overview', theme: store.get('theme', 'dark'), logo: store.get('logo', { glyph: 'M', image: '' }),
   runtime: { available: false, loading: true, version: '', error: '' }, runtimeCatalog: {},
@@ -26,7 +51,7 @@ const state = {
   filters: store.get('filters', [{ name: 'scale', options: '1920:-2' }]), selectedFilter: 0,
   presets: store.get('presets', []), converterFiles: [], tabs: store.get('tabs', DEFAULT_TABS),
   notifications: store.get('notifications', []),
-  settings: Object.assign({ parallel: 2, preferHardware: true, keepPassLogs: false, notifyComplete: true }, store.get('settings', {})),
+  settings: normalizeSettings(store.get('settings', {})),
   loudnormPending: {},
   form: Object.assign({
     codec: 'libx264', container: 'mp4', crf: 20, preset: 'medium', tune: 'none', width: 1920, height: -2, fps: '',
@@ -49,6 +74,27 @@ const GROUPS = {
   media: { title: 'Media', items: [['convert', 'sync_alt', 'Convert'], ['trim', 'content_cut', 'Trim & clip'], ['filters', 'account_tree', 'Filtergraph'], ['audio', 'graphic_eq', 'Audio'], ['gif', 'gif_box', 'GIF & thumbs'], ['presets', 'bookmarks', 'Presets'], ['inspector', 'search_insights', 'Inspector']] },
   registry: { title: 'Registry', items: [['codecs', 'memory', 'Codecs'], ['formats', 'folder_zip', 'Formats'], ['protocols', 'lan', 'Protocols'], ['bsf', 'swap_horiz', 'Bitstream filters'], ['devices', 'videocam', 'Devices'], ['matrix', 'grid_on', 'Capability matrix']] },
   system: { title: 'System', items: [['hwaccel', 'developer_board', 'Hardware accel'], ['streaming', 'podcasts', 'Streaming'], ['composer', 'terminal', 'Composer'], ['converter', 'published_with_changes', 'File converter']] }
+};
+
+const funnyPreview = (language, rawLevel) => {
+  const level = normalizeFunnyLevel(rawLevel);
+  const englishFact = 'Job failures show the exact exit status and recovery action.';
+  const cantoneseFact = '工作失敗會顯示確實退出狀態同復原方法。';
+  const englishVoice = [
+    '',
+    ' No mystery, no interpretive dance.',
+    ' Even the codec gremlins leave a receipt.',
+    ' The codec gremlins leave a receipt and tidy the cables.',
+    ' Maximum mischief, zero missing facts: the codec gremlins file the receipt in triplicate.'
+  ];
+  const cantoneseVoice = [
+    '',
+    ' 唔使估估下，資料照單全收。',
+    ' 編碼小精靈搞事都要留低收據。',
+    ' 編碼小精靈搞完事，仲要執返好條線。',
+    ' 玩到最盡都唔走數：編碼小精靈要交三份收據，少一張都唔得。'
+  ];
+  return language === 'cantonese' ? cantoneseFact + cantoneseVoice[level - 1] : englishFact + englishVoice[level - 1];
 };
 const RAIL = [['overview', 'dashboard', 'Home'], ['media', 'movie', 'Media'], ['registry', 'database', 'Registry'], ['system', 'developer_board', 'System']];
 const CATALOG_KINDS = { codecs: 'codecs', formats: 'formats', protocols: 'protocols', bsf: 'bsfs', devices: 'devices' };
@@ -230,8 +276,12 @@ const VIEWS = {
 
   converter: () => `${pageHead('Media conversion', 'File converter', 'Add a real batch, inspect actual media types, choose a supported target, and queue each file.', '<button class="outlined" id="converter-add">Add files</button><button class="filled" id="queue-converter">Queue supported files</button>')}<div class="grid"><div class="card span7"><div class="list">${state.converterFiles.length ? state.converterFiles.map((file,index) => `<div class="list-item"><span class="ms">draft</span><span style="flex:1"><b>${esc(file.name)}</b><br><small>${esc(file.details || file.kind || 'Type will be validated by the runtime')}</small></span><span class="tag${file.supported ? '' : ' idle'}">${file.supported ? 'READY' : 'UNSUPPORTED'}</span><button class="converter-remove" data-index="${index}">×</button></div>`).join('') : '<div class="empty-state"><b>No files added</b><br><small>The runtime performs bounded byte detection; extensions are not trusted.</small></div>'}</div></div><div class="card span5"><h2>Target</h2>${field('Output type',select('converter-target',['mp4','mkv','webm','mp3','flac','wav','png','jpg'],state.form.converterTarget))}<p class="notice">Media conversions may be lossy. Originals remain untouched and each queued result is validated by the runtime.</p></div></div>`,
 
-  settings: () => `${pageHead('Application', 'Settings', 'Execution and appearance preferences persist locally.', '')}<div class="grid"><div class="card span6"><h2>Appearance</h2><div class="seg"><button id="theme-dark" class="${state.theme === 'dark' ? 'active' : ''}">Dark</button><button id="theme-light" class="${state.theme === 'light' ? 'active' : ''}">Light</button></div><button class="tonal" id="logo-settings" style="margin-top:14px">Customize app logo</button></div>
-    <div class="card span6"><h2>Execution</h2>${field('Parallel jobs',input('setting-parallel',state.settings.parallel,'number','min="1" max="8"'))}<label class="check-row"><input id="setting-hardware" type="checkbox"${state.settings.preferHardware ? ' checked' : ''}> Prefer hardware encoders reported by runtime</label><label class="check-row"><input id="setting-passlogs" type="checkbox"${state.settings.keepPassLogs ? ' checked' : ''}> Keep intermediate two-pass logs</label><label class="check-row"><input id="setting-notify" type="checkbox"${state.settings.notifyComplete ? ' checked' : ''}> Notify on job completion</label><button class="filled" id="save-settings">Save execution settings</button></div></div>`
+  settings: () => `${pageHead('Application', 'Settings', 'Execution, appearance, and message voice preferences persist locally.', '')}<div class="grid"><div class="card span6"><h2>Appearance</h2><div class="seg"><button id="theme-dark" class="${state.theme === 'dark' ? 'active' : ''}">Dark</button><button id="theme-light" class="${state.theme === 'light' ? 'active' : ''}">Light</button></div><button class="tonal" id="logo-settings" style="margin-top:14px">Customize app logo</button></div>
+    <div class="card span6"><h2>Execution</h2>${field('Parallel jobs',input('setting-parallel',state.settings.parallel,'number','min="1" max="8"'))}<label class="check-row"><input id="setting-hardware" type="checkbox"${state.settings.preferHardware ? ' checked' : ''}> Prefer hardware encoders reported by runtime</label><label class="check-row"><input id="setting-passlogs" type="checkbox"${state.settings.keepPassLogs ? ' checked' : ''}> Keep intermediate two-pass logs</label><label class="check-row"><input id="setting-notify" type="checkbox"${state.settings.notifyComplete ? ' checked' : ''}> Notify on job completion</label></div>
+    <div class="card full"><h2>Funny levels</h2><p class="hint">English and Cantonese keep independent voice levels from 1 (fully serious) to 5 (maximum playfulness). New and reset profiles start at 5. Voice can change; file names, exit status, affected data, and recovery actions never do.</p><div class="two-col">
+      <div><label class="field"><span>English — level <output id="setting-funny-en-output">${state.settings.englishFunny}</output></span><input id="setting-funny-en" type="range" min="1" max="5" step="1" value="${state.settings.englishFunny}" aria-describedby="setting-funny-en-preview"></label><p class="notice" id="setting-funny-en-preview">${esc(funnyPreview('english', state.settings.englishFunny))}</p></div>
+      <div><label class="field"><span lang="zh-HK">廣東話 — 程度 <output id="setting-funny-yue-output">${state.settings.cantoneseFunny}</output></span><input id="setting-funny-yue" type="range" min="1" max="5" step="1" value="${state.settings.cantoneseFunny}" aria-describedby="setting-funny-yue-preview"></label><p class="notice" id="setting-funny-yue-preview" lang="zh-HK">${esc(funnyPreview('cantonese', state.settings.cantoneseFunny))}</p></div>
+    </div><div style="display:flex;gap:8px;flex-wrap:wrap"><button class="tonal" id="reset-funny-levels">Reset both to level 5</button><button class="filled" id="save-settings">Save settings</button></div></div></div>`
 };
 
 const catalogView = (view) => {
@@ -241,6 +291,16 @@ const catalogView = (view) => {
 };
 Object.keys(CATALOG_KINDS).forEach((view) => { VIEWS[view] = () => catalogView(view); });
 VIEWS.matrix = () => `${pageHead('Capability inputs', 'Capability matrix', 'Browse the real codec and container inventories together; compatibility is never guessed.', '<input id="matrix-search" placeholder="Filter both inventories">')}<div class="grid"><div class="card span6"><h2>Codecs reported by build</h2><div id="matrix-codecs" class="list">${(state.catalogs.codecs||[]).slice(0,250).map((entry)=>`<div class="list-item matrix-entry"><b>${esc(typeof entry==='string'?entry:entry.name||entry.id||'')}</b><small>${esc(typeof entry==='object'?entry.description||entry.flags||'':'')}</small></div>`).join('')||'<div class="empty-state">Loading codecs…</div>'}</div></div><div class="card span6"><h2>Formats reported by build</h2><div id="matrix-formats" class="list">${(state.catalogs.formats||[]).slice(0,250).map((entry)=>`<div class="list-item matrix-entry"><b>${esc(typeof entry==='string'?entry:entry.name||entry.id||'')}</b><small>${esc(typeof entry==='object'?entry.description||entry.flags||'':'')}</small></div>`).join('')||'<div class="empty-state">Loading formats…</div>'}</div></div></div>`;
+
+function bindFunnyLevelControl(inputId, outputId, previewId, language) {
+  const control = $(inputId), output = $(outputId), preview = $(previewId);
+  if (!control || !output || !preview) return;
+  control.addEventListener('input', () => {
+    const level = normalizeFunnyLevel(control.value);
+    output.textContent = String(level);
+    preview.textContent = funnyPreview(language, level);
+  });
+}
 
 function render() {
   const group = groupFor(state.view);
@@ -363,7 +423,16 @@ function wireView() {
 
   $('#copy-current-command')?.addEventListener('click', () => navigator.clipboard.writeText(safePreview()).then(() => notify('Copied','Command preview copied.')).catch((error) => notify('Copy failed',error.message,'error')));
   $('#theme-dark')?.addEventListener('click', () => { state.theme = 'dark'; render(); }); $('#theme-light')?.addEventListener('click', () => { state.theme = 'light'; render(); }); $('#logo-settings')?.addEventListener('click', openLogo);
-  $('#save-settings')?.addEventListener('click', () => { state.settings.parallel = clamp($('#setting-parallel').value,1,8); state.settings.preferHardware = $('#setting-hardware').checked; state.settings.keepPassLogs = $('#setting-passlogs').checked; state.settings.notifyComplete = $('#setting-notify').checked; saveUi(); notify('Settings saved','Execution preferences are now active.'); render(); });
+  bindFunnyLevelControl('#setting-funny-en', '#setting-funny-en-output', '#setting-funny-en-preview', 'english');
+  bindFunnyLevelControl('#setting-funny-yue', '#setting-funny-yue-output', '#setting-funny-yue-preview', 'cantonese');
+  $('#reset-funny-levels')?.addEventListener('click', () => {
+    state.settings.englishFunny = FUNNY_LEVEL_DEFAULT;
+    state.settings.cantoneseFunny = FUNNY_LEVEL_DEFAULT;
+    saveUi();
+    notify('Funny levels reset', 'English and Cantonese are both set to level 5. Message facts remain unchanged.');
+    render();
+  });
+  $('#save-settings')?.addEventListener('click', () => { state.settings.parallel = clamp($('#setting-parallel').value,1,8); state.settings.preferHardware = $('#setting-hardware').checked; state.settings.keepPassLogs = $('#setting-passlogs').checked; state.settings.notifyComplete = $('#setting-notify').checked; state.settings.englishFunny = normalizeFunnyLevel($('#setting-funny-en').value); state.settings.cantoneseFunny = normalizeFunnyLevel($('#setting-funny-yue').value); saveUi(); notify('Settings saved','Execution and message voice preferences are now active.'); render(); });
 }
 
 const go = (view) => { state.view = VIEWS[view] ? view : 'overview'; render(); };

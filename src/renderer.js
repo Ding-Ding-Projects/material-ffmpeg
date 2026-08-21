@@ -77,7 +77,7 @@ const state = {
     reasonId: '', error: ''
   }, runtimeCatalog: {},
   jobs: [], selectedJobs: new Set(), selectedJobId: '', catalogs: {}, catalogErrors: {}, catalogLoading: {},
-  inputs: {}, outputs: {}, probe: null, probeError: '', audioStreams: [],
+  inputs: {}, outputs: {}, probe: null, probeError: '', probeExportError: '', probeExportFormat: '', audioStreams: [],
   filters: store.get('filters', [{ name: 'scale', options: '1920:-2' }]), selectedFilter: 0,
   presets: store.get('presets', []), converterFiles: [], tabs: normalizeTabs(store.get('tabs', DEFAULT_TABS)),
   notifications: store.get('notifications', []),
@@ -461,7 +461,7 @@ const VIEWS = {
 
   presets: () => `${pageHead('Reusable settings', 'Presets', 'Saved locally from real configured operations.', '<button class="filled" id="new-preset">Save current convert settings</button>')}<div class="card"><div class="list">${state.presets.length ? state.presets.map((preset,index) => `<div class="list-item"><span class="ms">bookmarks</span><span style="flex:1"><b>${esc(preset.name)}</b><br><small class="mono">${esc(JSON.stringify(preset.values).slice(0,300))}</small></span><button class="tonal preset-use" data-index="${index}">Use</button><button class="outlined preset-edit" data-index="${index}">Rename</button><button class="preset-delete" data-index="${index}" style="color:var(--danger)">Delete</button></div>`).join('') : '<div class="empty-state"><b>No presets saved</b><br><small>Configure Convert, then save a named preset.</small></div>'}</div></div>`,
 
-  inspector: () => `${pageHead('ffprobe', 'Media inspector', 'Inspect a real file and export the exact bounded result.', '<button class="outlined" id="inspect-pick">Choose file</button><button class="filled" id="inspect-run">Inspect</button>')}<div class="grid"><div class="card span4"><h2>Source</h2>${state.inputs.inspector ? `<b>${esc(displayText(state.inputs.inspector.name, 'input file'))}</b>` : '<div class="empty-state">No file selected.</div>'}${state.probeError ? `<div class="notice" style="color:var(--danger)">${esc(displayText(state.probeError, 'inspection error'))}</div>` : ''}<div class="dialog-actions"><button class="tonal probe-export" data-format="json">JSON</button><button class="tonal probe-export" data-format="csv">CSV</button><button class="tonal probe-export" data-format="xml">XML</button></div></div>
+  inspector: () => `${pageHead('ffprobe', 'Media inspector', 'Inspect a real file and export the exact bounded result.', '<button class="outlined" id="inspect-pick">Choose file</button><button class="filled" id="inspect-run">Inspect</button>')}<div class="grid"><div class="card span4"><h2>Source</h2>${state.inputs.inspector ? `<b>${esc(displayText(state.inputs.inspector.name, 'input file'))}</b>` : '<div class="empty-state">No file selected.</div>'}${state.probeError ? `<div class="notice" style="color:var(--danger)">${esc(displayText(state.probeError, 'inspection error'))}</div>` : ''}${state.probeExportError ? `<div class="notice" style="color:var(--danger)">${esc(displayText(state.probeExportError, 'export error'))}</div>` : ''}<div class="dialog-actions"><button class="tonal probe-export" data-format="json" ${!state.probe || state.probeExportFormat ? 'disabled' : ''}>${state.probeExportFormat === 'json' ? 'Exporting JSON…' : 'JSON'}</button><button class="tonal probe-export" data-format="csv" ${!state.probe || state.probeExportFormat ? 'disabled' : ''}>${state.probeExportFormat === 'csv' ? 'Exporting CSV…' : 'CSV'}</button><button class="tonal probe-export" data-format="xml" ${!state.probe || state.probeExportFormat ? 'disabled' : ''}>${state.probeExportFormat === 'xml' ? 'Exporting XML…' : 'XML'}</button></div><p class="hint">JSON preserves the nested inspection result. CSV and XML use a complete row-per-node table with JSON Pointer paths. All formats are UTF-8 and limited to 32 MiB.</p></div>
     <div class="card span8"><h2>Probe result</h2><pre class="cmd-pre" id="probe-result">${state.probe ? esc(JSON.stringify(displayValue(state.probe, 'inspected file'),null,2).slice(0,200000)) : 'Nothing inspected yet.'}</pre></div></div>`,
 
   hwaccel: () => {
@@ -678,7 +678,7 @@ function savePreset() {
 
 async function inspectSelected(slot) {
   const file = state.inputs[slot]; if (!file) return notify('Choose a file','A real input is required before inspection.','error');
-  state.probeError = '';
+  state.probe = null; state.probeError = ''; state.probeExportError = ''; render();
   try {
     const result = await apiCall('probe.inspect', file.handle); state.probe = result;
     const streams = Array.isArray(result?.streams) ? result.streams : [];
@@ -688,11 +688,15 @@ async function inspectSelected(slot) {
 }
 async function exportProbe(format) {
   if (!state.probe || !state.inputs.inspector) return notify('Nothing to export','Inspect a file first.','error');
+  if (!['json','csv','xml'].includes(format) || state.probeExportFormat) return;
+  state.probeExportFormat = format; state.probeExportError = ''; render();
   try {
-    const destination = normalizeFiles(await apiCall('files.save',{suggestedName:`probe.${format}`,filters:[{name:format.toUpperCase(),extensions:[format]}]}))[0]; if (!destination) return;
-    await apiCall('probe.export', { fileHandle: state.inputs.inspector.handle, destinationHandle: destination.handle, format }); notify('Export complete',`${format.toUpperCase()} probe data saved.`);
+    const destination = normalizeFiles(await apiCall('files.save',{suggestedName:`ffprobe-inspection.${format}`,filters:[{name:`FFprobe ${format.toUpperCase()}`,extensions:[format]}]}))[0]; if (!destination) return;
+    const result = await apiCall('probe.export', { fileHandle: state.inputs.inspector.handle, destinationHandle: destination.handle, format });
+    notify('Export complete',`${format.toUpperCase()} inspection snapshot saved (${Number(result?.bytes) || 0} UTF-8 bytes).`);
   }
-  catch (error) { notify('Export failed',error.message,'error'); }
+  catch (error) { state.probeExportError = bounded(error.message, 1000); notify('Export failed',state.probeExportError,'error'); }
+  finally { state.probeExportFormat = ''; render(); }
 }
 async function loadCatalog(kind, force = false) {
   if (!kind || (state.catalogLoading[kind] && !force)) return;

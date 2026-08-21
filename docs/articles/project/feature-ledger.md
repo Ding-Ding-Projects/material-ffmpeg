@@ -61,7 +61,7 @@ The current interaction evidence belongs to source commit `5358582f13b6af418e58c
 | RTMP and SRT transport | Source-wired | Unrun | Transport builders are packaged; no exact-commit interaction receipt was produced. |
 | Command composer | Source-wired | Unrun | Dangerous/path-bearing options are blocked. |
 | Batch converter | Source-wired | Unrun | Eight media adapters are currently mapped. |
-| Inspector and probe export | Source-wired | Inspector working; exports unrun | Real H.264 320x180 and AAC input was inspected; JSON, CSV, and XML exports were not interacted with. |
+| Inspector and probe export | Source-wired | Inspector working; snapshot exports unrun | Real H.264 320x180 and AAC input was inspected. JSON preserves the bounded snapshot; CSV and XML use the documented row-per-node schema through a trusted output handle. None of the three exports were interacted with. |
 | Runtime catalogs and help | Source-wired | Codecs working; other kinds and help unrun | The live codecs catalog returned 539 entries. |
 | Durable job queue | Source-wired | Completion/logs working; controls unrun | Persistence, progress, logs, pause/resume/cancel/reorder/clear are implemented. |
 | Output validation | Source-wired | Working at `5358582` | The completed conversion produced and validated a non-empty H.264/AAC output. |

@@ -17,7 +17,7 @@ This ledger describes the installed desktop application and distinguishes source
 | HLS streaming output | Source-wired | Not verified in this pass | Local file output flow is present. |
 | Command composer | Source-wired | Not verified in this pass | Dangerous/path-bearing options are blocked. |
 | Batch converter | Source-wired | Not verified in this pass | Eight media adapters are currently mapped. |
-| Inspector and probe export | Source-wired | Not verified in this pass | Uses FFprobe JSON and native save destination. |
+| Inspector and probe export | Source-wired | Not verified in this pass | Retains the bounded FFprobe JSON snapshot and exports JSON or documented row-per-node CSV/XML through a native save destination. |
 | Runtime catalogs and help | Source-wired | Not verified in this pass | Data is queried from the bundled build. |
 | Durable job queue | Source-wired | Not verified in this pass | Persistence, progress, logs, pause/resume/cancel/reorder/clear are implemented. |
 | Output validation | Source-wired | Not verified in this pass | Missing or empty expected output fails a job. |

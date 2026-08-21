@@ -6,7 +6,9 @@ The inspector and catalog surfaces derive their data from the bundled FFprobe an
 
 The renderer provides guided conversion, trimming, filtergraph, audio, GIF, thumbnail, HLS, command-composer, preset, and batch-converter surfaces. Typed builders produce argument arrays for trusted execution. The batch converter currently maps verified media inputs to MP4, MKV, WebM, MP3, FLAC, WAV, PNG, and JPEG adapters.
 
-The inspector opens a user-selected media file, requests structured FFprobe JSON, displays format and stream information, and can export the current probe result through a user-selected destination. The renderer derives its audio-stream picker from inspected streams.
+The inspector opens a user-selected media file, requests structured FFprobe JSON, displays format and stream information, and can export that exact in-memory inspection snapshot through a user-selected destination. Export does not run a second probe whose result could differ from the data on screen. The renderer derives its audio-stream picker from inspected streams.
+
+JSON export preserves the nested FFprobe object. CSV and XML use the same documented row-per-node representation: each record carries an RFC 6901 JSON Pointer path, a value type, and a scalar value where applicable. Container rows preserve objects and arrays, so the formats do not pretend nested media metadata is a simple one-row table. All three formats are UTF-8 and fail when serialized output would exceed 32 MiB. XML additionally fails with a visible explanation when a value contains a character XML 1.0 cannot represent; JSON or CSV remains available for that snapshot.
 
 Runtime catalogs list codecs, formats, protocols, bitstream filters, devices, filters, and hardware accelerators. Component help supports encoders, decoders, filters, muxers, demuxers, protocols, and bitstream filters. The option-guides layer combines static, bounded guidance with runtime-derived help while keeping those sources distinguishable.
 
@@ -20,17 +22,17 @@ Catalog queries use fixed FFmpeg argument sets and a five-minute in-memory cache
 
 Builders reject unknown fields, unsupported enumerations, conflicting trim values, filters combined with stream copy, malformed stream selectors, oversized collections, and disallowed sequence patterns. A valid argument vector can still fail for a particular media input or bundled-runtime capability.
 
-Missing FFprobe, malformed JSON, oversized output, timeouts, unsupported catalog/help kinds, invalid names, empty runtime results, and expired file handles are reported rather than replaced with mock data. Probe exports fail if the destination handle is not an output handle or the format is unsupported.
+Missing FFprobe, malformed JSON, oversized output, timeouts, unsupported catalog/help kinds, invalid names, empty runtime results, and expired file handles are reported rather than replaced with mock data. Probe exports fail if the destination handle is not an output handle, the format is unsupported, the bounded inspection snapshot is no longer available, serialization exceeds 32 MiB, or XML cannot faithfully represent a value.
 
 ## Security considerations
 
 Conversion uses opaque handles and structured arrays rather than renderer paths or shell strings. The renderer cannot select an arbitrary executable.
 
-Inputs and export destinations are opaque handles created by native dialogs. Catalog commands are selected from fixed allowlists. Help names are bounded and validated before becoming an argument. Display code limits result counts and text lengths before inserting content.
+Inputs and export destinations are opaque handles created by native dialogs. The renderer cannot supply a destination path or arbitrary export payload: the trusted main process retains the bounded inspection snapshot, resolves the output handle, serializes the selected allowlisted format, and writes atomically. At most 64 inspection snapshots are retained in memory. Catalog commands are selected from fixed allowlists. Help names are bounded and validated before becoming an argument. Display code limits result counts and text lengths before inserting content.
 
 ## Verification state
 
-Source inspection confirms the runtime-derived routes and their bounds. No actual media probe, catalog enumeration, help lookup, or export was run in this documentation-only pass.
+Source inspection confirms the snapshot-bound export route and its bounds. No test, packaged interaction, media probe, catalog enumeration, help lookup, or export was run in this speed pass.
 
 ## Suggested articles
 

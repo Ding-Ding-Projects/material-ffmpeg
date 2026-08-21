@@ -30,6 +30,8 @@ The implementation and bounds are present in source. No live queue, restart reco
 
 `src/ui/command-builders.js` implements typed builders for conversion, trimming, filtergraphs, audio processing, GIF creation, thumbnails, HLS streaming, low-level composition, and converter adapters. Builders validate supported keys, ranges, codecs, containers, stream selectors, time values, filter text, and file-handle objects before returning arguments.
 
+The visual-output surface converts renderer-visible UUIDs into typed input/output handle entries only after the GIF or still builder accepts the selected values. GIF jobs use one selected `.gif` destination. Still jobs use a selected `.jpg`, `.jpeg`, or `.png` destination, seek to a bounded timestamp, and force a one-frame output. The queue resolves those handles to paths in the privileged process and independently requires each declared output to exist and contain bytes before marking the job complete.
+
 The visible command is a preview, not a shell command. File paths remain opaque handles until the trusted process compiles them. The command composer blocks process-control and path-bearing options such as `-i`, `-progress`, `-y`, report paths, filter scripts, and pass-log paths.
 
 Source inspection confirms the builders call the queue bridge. It does not prove the exact bundled FFmpeg build accepts every generated argument vector.

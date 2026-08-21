@@ -30,6 +30,8 @@ Never place credentials, tokens, selected local paths, media contents, or privat
 
 The prior speed handoff explicitly recorded no lint, tests, accessibility checks, screenshots, package build, or installer execution. This documentation pass likewise performs source inspection and documentation only. The release candidate, packaged runtime, interaction evidence, and public assets require independent verification at the final integrated commit.
 
+The GIF and thumbnail lane now has source wiring for native input/output selection, bounded persisted controls, typed FFmpeg argument construction, opaque-handle conversion, queue submission, and nonempty-output validation. The GIF and thumbnail interactions were not launched or captured, and no test, lint, type-check, static-analysis, accessibility, package-execution, or installer-execution verdict exists for that lane.
+
 ## Suggested articles
 
 - [Roadmap](roadmap.md)

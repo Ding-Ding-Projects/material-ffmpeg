@@ -423,7 +423,12 @@
     const statsMode = enumValue(spec.statsMode, 'full', new Set(['full', 'diff', 'single']), 'statsMode');
     const dither = enumValue(spec.dither, 'sierra2_4a', new Set(['none', 'bayer', 'heckbert', 'floyd_steinberg', 'sierra2', 'sierra2_4a']), 'dither');
     const bayerScale = number(spec.bayerScale, 2, 0, 5, 'bayerScale', true);
-    const paletteUse = dither === 'bayer' ? `paletteuse=dither=bayer:bayer_scale=${bayerScale}` : `paletteuse=dither=${dither}`;
+    const paletteUseOptions = [
+      `dither=${dither}`,
+      dither === 'bayer' ? `bayer_scale=${bayerScale}` : '',
+      statsMode === 'single' ? 'new=1' : ''
+    ].filter(Boolean).join(':');
+    const paletteUse = `paletteuse=${paletteUseOptions}`;
     const graph = `fps=${fps},scale=${width}:${height}:flags=${scaler},split[v0][v1];[v0]palettegen=max_colors=${maxColors}:stats_mode=${statsMode}[p];[v1][p]${paletteUse}`;
     args.push('-filter_complex', graph, '-loop', String(number(spec.loop, 0, -1, 65535, 'loop', true)));
     args.push(outputPath(spec.output, 'output', false));
@@ -434,13 +439,15 @@
   function thumbnails(inputSpec) {
     const spec = object(inputSpec, 'thumbnails', THUMBNAIL_KEYS);
     const outputPattern = outputPath(spec.outputPattern, 'outputPattern', true);
-    const count = spec.count === undefined ? undefined : number(spec.count, undefined, 1, 1000000, 'count', true);
+    const requestedCount = spec.count === undefined ? undefined : number(spec.count, undefined, 1, 1000000, 'count', true);
+    const mode = enumValue(spec.mode, 'interval', new Set(['single', 'interval', 'iframes', 'thumbnail', 'fps']), 'mode');
+    if (mode === 'single' && requestedCount !== undefined && requestedCount !== 1) fail('count', 'must be 1 in single-frame mode');
+    const count = mode === 'single' ? 1 : requestedCount;
     if (count !== 1 && !/%(?:\d+)?d/u.test(outputPattern)) fail('outputPattern', 'must include a %d sequence placeholder when producing multiple files');
     const args = commonArgs(spec);
     addTimingBeforeInput(args, spec);
     args.push('-i', localPath(spec.input, 'input'));
     addTimingAfterInput(args, spec);
-    const mode = enumValue(spec.mode, 'interval', new Set(['interval', 'iframes', 'thumbnail', 'fps']), 'mode');
     const filters = [];
     if (mode === 'interval') filters.push(`fps=1/${number(spec.intervalSeconds, 60, 0.001, 86400, 'intervalSeconds', false)}`);
     if (mode === 'iframes') filters.push("select='eq(pict_type\\,I)'");
@@ -449,7 +456,8 @@
     if (spec.width !== undefined || spec.height !== undefined) {
       filters.push(`scale=${dimension(spec.width, -2, 'width')}:${dimension(spec.height, -2, 'height')}:flags=${enumValue(spec.scaler, 'lanczos', SCALERS, 'scaler')}`);
     }
-    args.push('-vf', filters.join(','), '-vsync', 'vfr');
+    if (filters.length) args.push('-vf', filters.join(','));
+    args.push('-vsync', 'vfr');
     if (count !== undefined) args.push('-frames:v', String(count));
     if (spec.quality !== undefined) args.push('-q:v', String(number(spec.quality, undefined, 1, 31, 'quality', true)));
     args.push(outputPattern);

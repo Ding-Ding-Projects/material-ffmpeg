@@ -34,6 +34,8 @@ At exact commit `5358582f13b6af418e58c1971747b270d308f34b`, the packaged applica
 
 No tests, lint, static analysis, accessibility checks, or installer execution ran in this pass. The release asset list also lacks the separately required dim-sum image. Every workflow and universal feature without an exact interaction receipt remains unrun or not integrated in the feature ledger.
 
+The GIF and thumbnail lane now has source wiring for native input/output selection, bounded persisted controls, typed FFmpeg argument construction, opaque-handle conversion, queue submission, and nonempty-output validation. The GIF and thumbnail interactions were not launched or captured, and no test, lint, type-check, static-analysis, accessibility, package-execution, or installer-execution verdict exists for that lane.
+
 ## Suggested articles
 
 - [Roadmap](roadmap.md)

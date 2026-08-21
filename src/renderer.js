@@ -88,7 +88,9 @@ const state = {
     trimStart: '00:00:00.000', trimEnd: '', trimDuration: '00:00:10.000', trimMode: 'copy', avoidNegative: true,
     trimVideoCodec: 'libx264', trimAudioCodec: 'aac', trimCrf: 20, trimPreset: 'medium',
     loudness: -16, lra: 11, truePeak: -1.5, loudnormCodec: 'flac', audioCodec: 'copy', audioStream: '0:a:0',
-    gifFps: 15, gifWidth: 640, gifColors: 128, thumbTime: '00:00:00.000',
+    gifStart: '00:00:00.000', gifDuration: '00:00:05.000', gifFps: 15, gifWidth: 640, gifHeight: -2,
+    gifScaler: 'lanczos', gifColors: 128, gifStatsMode: 'full', gifDither: 'sierra2_4a', gifBayerScale: 2, gifLoop: 0,
+    thumbTime: '00:00:00.000', thumbFormat: 'jpg', thumbWidth: 1280, thumbHeight: -2, thumbScaler: 'lanczos', thumbQuality: 2,
     streamMode: 'hls', streamTarget: '', hlsTime: 6, hlsList: 6,
     composerArgs: '-c:v\nlibx264\n-c:a\naac', converterTarget: 'mp4'
   }, store.get('form', {}))
@@ -222,7 +224,7 @@ const outputOptions = (slot) => {
     'audio-normalize': { extension: state.form.loudnormCodec === 'aac' ? 'm4a' : state.form.loudnormCodec === 'libopus' ? 'opus' : state.form.loudnormCodec.startsWith('pcm_') ? 'wav' : state.form.loudnormCodec, label: 'Normalized audio' },
     'audio-extract': { extension: state.form.audioCodec === 'aac' ? 'm4a' : state.form.audioCodec === 'libopus' ? 'opus' : state.form.audioCodec.startsWith('pcm_') ? 'wav' : state.form.audioCodec === 'copy' ? (selectedInput?.name?.split('.').pop()?.toLowerCase() || 'mka') : state.form.audioCodec, label: 'Extracted audio' },
     gif: { extension: 'gif', label: 'GIF image' },
-    thumbs: { extension: 'jpg', label: 'JPEG image' },
+    thumbs: state.form.thumbFormat === 'png' ? { extension: 'png', label: 'PNG image' } : { extension: 'jpg', label: 'JPEG image' },
     streaming: { extension: 'm3u8', label: 'HLS playlist' },
     composer: { extension: 'mp4', label: 'Media output' }
   };
@@ -283,8 +285,35 @@ const extractValues = () => ({
   input: state.inputs.audio?.handle,
   streams: [{ selector: state.form.audioStream, output: requireExtension(state.outputs['audio-extract'], [outputOptions('audio-extract').filters[0].extensions[0]], 'extracted audio output').handle, codec: state.form.audioCodec }]
 });
-const gifValues = () => ({ input: state.inputs.gif?.handle, output: requireExtension(state.outputs.gif, ['gif'], 'GIF output').handle, fps: state.form.gifFps, width: state.form.gifWidth, maxColors: state.form.gifColors });
-const thumbnailValues = () => ({ input: state.inputs.thumbs?.handle, outputPattern: requireExtension(state.outputs.thumbs, ['jpg','jpeg'], 'thumbnail output').handle, start: state.form.thumbTime, mode: 'thumbnail', batchSize: 100, count: 1, quality: 2 });
+const gifValues = () => ({
+  input: state.inputs.gif?.handle,
+  output: requireExtension(state.outputs.gif, ['gif'], 'GIF output').handle,
+  start: state.form.gifStart || undefined,
+  duration: state.form.gifDuration || undefined,
+  fps: state.form.gifFps,
+  width: state.form.gifWidth,
+  height: state.form.gifHeight,
+  scaler: state.form.gifScaler,
+  maxColors: state.form.gifColors,
+  statsMode: state.form.gifStatsMode,
+  dither: state.form.gifDither,
+  bayerScale: state.form.gifDither === 'bayer' ? state.form.gifBayerScale : undefined,
+  loop: state.form.gifLoop
+});
+const thumbnailValues = () => {
+  const format = state.form.thumbFormat === 'png' ? 'png' : 'jpg';
+  return {
+    input: state.inputs.thumbs?.handle,
+    outputPattern: requireExtension(state.outputs.thumbs, format === 'png' ? ['png'] : ['jpg', 'jpeg'], 'thumbnail output').handle,
+    start: state.form.thumbTime,
+    mode: 'single',
+    count: 1,
+    width: state.form.thumbWidth,
+    height: state.form.thumbHeight,
+    scaler: state.form.thumbScaler,
+    quality: format === 'jpg' ? state.form.thumbQuality : undefined
+  };
+};
 const streamingValues = () => state.form.streamMode === 'hls'
   ? {
       input: state.inputs.streaming?.handle,
@@ -455,9 +484,28 @@ const VIEWS = {
       <div class="two-col" style="margin-top:14px">${field('Integrated loudness (LUFS)', input('audio-lufs',state.form.loudness,'number','min="-70" max="-5" step="0.1"'))}${field('Loudness range',input('audio-lra',state.form.lra,'number','min="1" max="50" step="0.1"'))}${field('True peak (dBTP)',input('audio-tp',state.form.truePeak,'number','min="-9" max="0" step="0.1"'))}${field('Normalized output codec',select('loudnorm-codec',['flac','aac','libopus','pcm_s24le'],state.form.loudnormCodec))}</div><button class="filled" id="queue-loudnorm">Queue measured two-pass normalization</button></div>
     <div class="card span6"><h2>Extract stream</h2><div class="list">${pickerCard('audio-extract','Extracted output',true)}</div>${field('Stream', select('audio-stream', state.audioStreams.length ? state.audioStreams.map((s) => s.id) : ['0:a:0'], state.form.audioStream))}${field('Output codec',select('audio-codec',['copy','flac','aac','libopus','pcm_s24le'],state.form.audioCodec))}<button class="filled" id="queue-extract">Queue extraction</button><p class="hint">Streams are populated from the selected file's real ffprobe result. Stream copy keeps the encoded bytes and does not apply filters.</p></div></div>`,
 
-  gif: () => `${pageHead('Stills & loops', 'GIF & thumbnails', 'Queue a palette-based GIF or one timestamped still.', '')}<div class="grid">
-    <div class="card span6"><h2>GIF export</h2><div class="list">${pickerCard('gif','Input')}${pickerCard('gif','Output',true)}</div><div class="two-col">${field('FPS',input('gif-fps',state.form.gifFps,'number','min="1" max="60"'))}${field('Width',input('gif-width',state.form.gifWidth,'number','min="16" max="8192"'))}${field('Palette colors',input('gif-colors',state.form.gifColors,'number','min="2" max="256"'))}</div><button class="filled" id="queue-gif">Queue GIF</button></div>
-    <div class="card span6"><h2>Thumbnail</h2><div class="list">${pickerCard('thumbs','Input')}${pickerCard('thumbs','JPEG output',true)}</div>${field('Timestamp',input('thumb-time',state.form.thumbTime,'text','placeholder="00:00:10.000"'))}<button class="filled" id="queue-thumbs">Queue thumbnail</button><p class="hint">This flow writes one validated still. It does not pretend a single save destination is a sequence folder.</p></div></div>`,
+  gif: () => `${pageHead('Stills & loops', 'GIF & thumbnails', 'Queue a bounded palette-based GIF or one exact timestamped still through the trusted job queue.', '')}<div class="grid">
+    <div class="card span6"><h2>GIF export</h2><div class="list">${pickerCard('gif','Input')}${pickerCard('gif','GIF output',true)}</div><div class="two-col">
+      ${field('Start time',input('gif-start',state.form.gifStart,'text','placeholder="00:00:00.000"'))}
+      ${field('Duration',input('gif-duration',state.form.gifDuration,'text','placeholder="00:00:05.000"'))}
+      ${field('FPS',input('gif-fps',state.form.gifFps,'number','min="1" max="60" step="1"'))}
+      ${field('Width',input('gif-width',state.form.gifWidth,'number','min="16" max="8192" step="1"'))}
+      ${field('Height (-2 keeps aspect)',input('gif-height',state.form.gifHeight,'number','min="-2" max="8192" step="1"'))}
+      ${field('Scaler',select('gif-scaler',['lanczos','bicubic','bilinear','area','neighbor'],state.form.gifScaler))}
+      ${field('Palette colors',input('gif-colors',state.form.gifColors,'number','min="4" max="256" step="1"'))}
+      ${field('Palette statistics',select('gif-stats',['full','diff','single'],state.form.gifStatsMode))}
+      ${field('Dither',select('gif-dither',['sierra2_4a','sierra2','floyd_steinberg','heckbert','bayer','none'],state.form.gifDither))}
+      ${state.form.gifDither === 'bayer' ? field('Bayer scale',input('gif-bayer-scale',state.form.gifBayerScale,'number','min="0" max="5" step="1"')) : ''}
+      ${field('Loop count (0 = forever)',input('gif-loop',state.form.gifLoop,'number','min="-1" max="65535" step="1"'))}
+    </div><h3>Command preview</h3><pre class="cmd-pre" id="gif-preview">${esc(workflowPreview('gif',gifValues))}</pre><button class="filled" id="queue-gif">Queue GIF</button><p class="hint">Single-frame palette statistics regenerate the palette for each frame. Bayer scale is accepted only when Bayer dithering is selected.</p></div>
+    <div class="card span6"><h2>Thumbnail</h2><div class="list">${pickerCard('thumbs','Input')}${pickerCard('thumbs',state.form.thumbFormat === 'png' ? 'PNG output' : 'JPEG output',true)}</div><div class="two-col">
+      ${field('Timestamp',input('thumb-time',state.form.thumbTime,'text','placeholder="00:00:10.000"'))}
+      ${field('Format',select('thumb-format',['jpg','png'],state.form.thumbFormat))}
+      ${field('Width',input('thumb-width',state.form.thumbWidth,'number','min="16" max="8192" step="1"'))}
+      ${field('Height (-2 keeps aspect)',input('thumb-height',state.form.thumbHeight,'number','min="-2" max="8192" step="1"'))}
+      ${field('Scaler',select('thumb-scaler',['lanczos','bicubic','bilinear','area','neighbor'],state.form.thumbScaler))}
+      ${state.form.thumbFormat === 'png' ? '' : field('JPEG quality (1 best, 31 smallest)',input('thumb-quality',state.form.thumbQuality,'number','min="1" max="31" step="1"'))}
+    </div><h3>Command preview</h3><pre class="cmd-pre" id="thumb-preview">${esc(workflowPreview('thumbnails',thumbnailValues))}</pre><button class="filled" id="queue-thumbs">Queue thumbnail</button><p class="hint">This flow seeks to the selected timestamp and writes exactly one nonempty still. It does not run a representative-frame batch or pretend one save destination is a sequence folder.</p></div></div>`,
 
   presets: () => `${pageHead('Reusable settings', 'Presets', 'Saved locally from real configured operations.', '<button class="filled" id="new-preset">Save current convert settings</button>')}<div class="card"><div class="list">${state.presets.length ? state.presets.map((preset,index) => `<div class="list-item"><span class="ms">bookmarks</span><span style="flex:1"><b>${esc(preset.name)}</b><br><small class="mono">${esc(JSON.stringify(preset.values).slice(0,300))}</small></span><button class="tonal preset-use" data-index="${index}">Use</button><button class="outlined preset-edit" data-index="${index}">Rename</button><button class="preset-delete" data-index="${index}" style="color:var(--danger)">Delete</button></div>`).join('') : '<div class="empty-state"><b>No presets saved</b><br><small>Configure Convert, then save a named preset.</small></div>'}</div></div>`,
 
@@ -533,6 +581,8 @@ const updateForm = (id, key, numeric = false) => {
 };
 function updatePreviews() {
   const preview = $('#cmd-pre'); if (preview) preview.textContent = convertPreview(); $('#live-command').textContent = livePreview();
+  const gifPreview = $('#gif-preview'); if (gifPreview) gifPreview.textContent = workflowPreview('gif', gifValues);
+  const thumbnailPreview = $('#thumb-preview'); if (thumbnailPreview) thumbnailPreview.textContent = workflowPreview('thumbnails', thumbnailValues);
   const composer = $('#composer-preview'); if (composer) {
     try { composer.textContent = commandPreview(build('composer', composerValues())); }
     catch (error) { composer.textContent = displayText(error.message, 'command detail'); }
@@ -596,7 +646,14 @@ function wireView() {
   $$('#palette-open,#palette-open-2').forEach((button) => button.onclick = openPalette);
   $$('.pick-input').forEach((button) => button.onclick = async () => { const files = await pickFile(button.dataset.slot, { multiple: false, purpose: button.dataset.slot }); if (files.length && ['audio','inspector'].includes(button.dataset.slot)) inspectSelected(button.dataset.slot); });
   $$('.pick-output').forEach((button) => button.onclick = () => chooseOutput(button.dataset.slot, Object.assign({ purpose: button.dataset.slot }, outputOptions(button.dataset.slot))));
-  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-mode','trimMode'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-codec','audioCodec'],['audio-stream','audioStream'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-colors','gifColors',true],['thumb-time','thumbTime'],['stream-target','streamTarget'],['hls-time','hlsTime',true],['hls-list','hlsList',true],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
+  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-mode','trimMode'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-codec','audioCodec'],['audio-stream','audioStream'],['gif-start','gifStart'],['gif-duration','gifDuration'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-height','gifHeight',true],['gif-scaler','gifScaler'],['gif-colors','gifColors',true],['gif-stats','gifStatsMode'],['gif-dither','gifDither'],['gif-bayer-scale','gifBayerScale',true],['gif-loop','gifLoop',true],['thumb-time','thumbTime'],['thumb-width','thumbWidth',true],['thumb-height','thumbHeight',true],['thumb-scaler','thumbScaler'],['thumb-quality','thumbQuality',true],['stream-target','streamTarget'],['hls-time','hlsTime',true],['hls-list','hlsList',true],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
+  const gifDither = $('#gif-dither'); if (gifDither) gifDither.onchange = () => { state.form.gifDither = gifDither.value; saveUi(); render(); };
+  const thumbnailFormat = $('#thumb-format'); if (thumbnailFormat) thumbnailFormat.onchange = () => {
+    state.form.thumbFormat = thumbnailFormat.value === 'png' ? 'png' : 'jpg';
+    const expected = state.form.thumbFormat === 'png' ? new Set(['png']) : new Set(['jpg', 'jpeg']);
+    if (state.outputs.thumbs && !expected.has(outputExtension(state.outputs.thumbs))) delete state.outputs.thumbs;
+    saveUi(); render();
+  };
   const streamMode = $('#stream-mode'); if (streamMode) streamMode.onchange = () => { state.form.streamMode = streamMode.value; saveUi(); render(); };
   const trimNegative = $('#trim-negative'); if (trimNegative) trimNegative.onchange = () => { state.form.avoidNegative = trimNegative.checked; saveUi(); };
 

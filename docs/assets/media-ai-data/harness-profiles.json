@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "ollama-local-chat",
+      "name": "Local chat session",
+      "description": "Previews a browser-local chat session against the selected installed Ollama model.",
+      "operation": "chat",
+      "requiredCapabilities": ["chat"],
+      "mutable": false
+    },
+    {
+      "id": "ollama-local-generate",
+      "name": "Local text generation",
+      "description": "Previews one bounded generation request against the selected installed Ollama model.",
+      "operation": "generate",
+      "requiredCapabilities": ["generate"],
+      "mutable": false
+    },
+    {
+      "id": "ollama-vision-chat",
+      "name": "Local image-aware chat",
+      "description": "Available only when imported capability metadata confirms image input support.",
+      "operation": "chat",
+      "requiredCapabilities": ["chat", "vision"],
+      "mutable": false
+    }
+  ]
+}

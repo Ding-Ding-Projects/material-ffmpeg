@@ -1,0 +1,224 @@
+{
+  "schemaVersion": 1,
+  "defaultArticle": "project-overview",
+  "categories": [
+    { "id": "project", "label": "Project records" },
+    { "id": "application", "label": "Desktop application" },
+    { "id": "delivery", "label": "Build and release" },
+    { "id": "core", "label": "Website core" },
+    { "id": "features", "label": "Website features" },
+    { "id": "media-ai", "label": "Converter and local AI" }
+  ],
+  "articles": [
+    {
+      "id": "project-overview",
+      "title": "Project overview",
+      "category": "project",
+      "path": "articles/project/project-overview.md",
+      "summary": "Purpose, repository layout, current delivery state, and supported Windows scope."
+    },
+    {
+      "id": "handoff",
+      "title": "Current handoff",
+      "category": "project",
+      "path": "articles/project/handoff.md",
+      "summary": "The preserved delivery baseline, implementation ownership, evidence, and remaining work."
+    },
+    {
+      "id": "roadmap",
+      "title": "Roadmap",
+      "category": "project",
+      "path": "articles/project/roadmap.md",
+      "summary": "Completed foundations and the exact release-grade work that remains."
+    },
+    {
+      "id": "licensing-notices",
+      "title": "Licensing and third-party notices",
+      "category": "project",
+      "path": "articles/project/licensing-notices.md",
+      "summary": "MIT application licensing and the separate GPLv3 FFmpeg distribution boundary."
+    },
+    {
+      "id": "design-provenance",
+      "title": "Design reference provenance",
+      "category": "project",
+      "path": "articles/project/design-provenance.md",
+      "summary": "How the supplied design export is preserved and treated as reference data."
+    },
+    {
+      "id": "architecture-runtime",
+      "title": "Architecture and trusted runtime",
+      "category": "application",
+      "path": "articles/project/architecture-runtime.md",
+      "summary": "Renderer isolation, trusted FFmpeg resolution, narrow IPC, and packaged runtime ownership."
+    },
+    {
+      "id": "jobs-queue-commands",
+      "title": "Jobs, queue, and command builders",
+      "category": "application",
+      "path": "articles/project/jobs-queue-commands.md",
+      "summary": "Validated argv construction, concurrency, lifecycle controls, progress, and durable job state."
+    },
+    {
+      "id": "conversion-inspector-catalog",
+      "title": "Conversion, inspector, and option catalog",
+      "category": "application",
+      "path": "articles/project/conversion-inspector-catalog.md",
+      "summary": "Guided FFmpeg workflows, FFprobe inspection, and bounded runtime option help."
+    },
+    {
+      "id": "settings-preferences",
+      "title": "Application settings and preferences",
+      "category": "application",
+      "path": "articles/project/settings-preferences.md",
+      "summary": "Local appearance, workspace, runtime, queue, and privacy preference behavior."
+    },
+    {
+      "id": "build-install-dependencies",
+      "title": "Build, install, and dependencies",
+      "category": "delivery",
+      "path": "articles/project/build-install-dependencies.md",
+      "summary": "Pinned toolchain acquisition, one-click builds, bundled FFmpeg, and unsigned Squirrel packaging."
+    },
+    {
+      "id": "update-release",
+      "title": "Updates and releases",
+      "category": "delivery",
+      "path": "articles/project/update-release.md",
+      "summary": "Automatic update behavior, direct build-and-release automation, evidence, and release assets."
+    },
+    {
+      "id": "privacy-security",
+      "title": "Privacy and security",
+      "category": "project",
+      "path": "articles/project/privacy-security.md",
+      "summary": "Local media processing, process boundaries, sensitive data handling, and known limits."
+    },
+    {
+      "id": "accessibility",
+      "title": "Application accessibility",
+      "category": "application",
+      "path": "articles/project/accessibility.md",
+      "summary": "Keyboard, screen-reader, focus, reduced-motion, contrast, touch, and scaling behavior."
+    },
+    {
+      "id": "feature-ledger",
+      "title": "Feature verification ledger",
+      "category": "project",
+      "path": "articles/project/feature-ledger.md",
+      "summary": "A factual list of implemented, pending, working, and not-yet-verified behavior."
+    },
+    {
+      "id": "docs-source",
+      "title": "Documentation browser source",
+      "category": "project",
+      "path": "articles/README.md",
+      "summary": "How the local article manifest, renderer, search, and export behavior are maintained."
+    },
+    {
+      "id": "website-boundary",
+      "title": "Website and installed application boundary",
+      "category": "core",
+      "path": "articles/core/website-boundary.md",
+      "summary": "What the static site can do and what remains owned by the installed Windows application."
+    },
+    {
+      "id": "local-preferences",
+      "title": "Local website preferences",
+      "category": "core",
+      "path": "articles/core/local-preferences.md",
+      "summary": "Browser-local language, appearance, attention support, and personal vocabulary state."
+    },
+    {
+      "id": "accessibility-and-navigation",
+      "title": "Accessibility and navigation",
+      "category": "core",
+      "path": "articles/core/accessibility-and-navigation.md",
+      "summary": "Responsive tabs, keyboard navigation, command palette, focus, and regex search."
+    },
+    {
+      "id": "release-trust",
+      "title": "Release and installer trust",
+      "category": "core",
+      "path": "articles/core/release-trust.md",
+      "summary": "Why direct installer links remain absent until an immutable release asset is verified."
+    },
+    {
+      "id": "interactive-site-features",
+      "title": "Interactive website features",
+      "category": "features",
+      "path": "articles/features/README.md",
+      "summary": "Index of browser-local customization, organization, notification, history, and accessibility tools."
+    },
+    {
+      "id": "website-feature-inventory",
+      "title": "Website feature inventory",
+      "category": "features",
+      "path": "articles/features/inventory.md",
+      "summary": "The hand-written implementation, documentation, persistence, interaction, and capture ledger."
+    },
+    {
+      "id": "appearance-and-logo",
+      "title": "Appearance and app logo",
+      "category": "features",
+      "path": "articles/features/appearance-and-logo.md",
+      "summary": "Local themes, element appearance, color translation, and bounded custom-logo handling."
+    },
+    {
+      "id": "focus-and-attention",
+      "title": "Focus and attention modes",
+      "category": "features",
+      "path": "articles/features/focus-and-attention.md",
+      "summary": "Five optional local presentation aids and their explicit non-medical boundary."
+    },
+    {
+      "id": "locks-authenticator-support",
+      "title": "Local locks, authenticator, and Support Tickets",
+      "category": "features",
+      "path": "articles/features/locks-authenticator-support.md",
+      "summary": "Browser-local toy locks, TOTP tools, recovery disclosures, and secret-export confirmation."
+    },
+    {
+      "id": "notifications-schedules-history",
+      "title": "Notifications, schedules, and history",
+      "category": "features",
+      "path": "articles/features/notifications-schedules-history.md",
+      "summary": "Non-blocking notices, scheduled preferences, and append-only browser-local history."
+    },
+    {
+      "id": "exports-and-bulk-actions",
+      "title": "Exports and bulk actions",
+      "category": "features",
+      "path": "articles/features/exports-and-bulk-actions.md",
+      "summary": "Selection scopes, previews, faithful text formats, and honest unavailable binary exports."
+    },
+    {
+      "id": "download-handoff",
+      "title": "Download handoff surfaces",
+      "category": "features",
+      "path": "articles/features/download-handoff.md",
+      "summary": "Start, progress, and completion surfaces with explicit static-site simulation limits."
+    },
+    {
+      "id": "accessibility-responsive-layout",
+      "title": "Accessibility and responsive behavior",
+      "category": "features",
+      "path": "articles/features/accessibility-and-responsive-layout.md",
+      "summary": "Semantic controls, visible focus, touch sizing, responsive docks, and bounded overlays."
+    },
+    {
+      "id": "browser-boundaries",
+      "title": "Browser-only boundaries",
+      "category": "features",
+      "path": "articles/features/browser-boundaries.md",
+      "summary": "Capabilities implemented locally on the site and actions that require the installed application."
+    },
+    {
+      "id": "local-converter-ollama",
+      "title": "Local converter and Ollama suite",
+      "category": "media-ai",
+      "path": "articles/media-ai/README.md",
+      "summary": "Browser-local file conversion and loopback-only Ollama management with honest capability boundaries."
+    }
+  ]
+}

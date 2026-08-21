@@ -288,8 +288,10 @@ async function queueLoudnormAnalysis() {
   const values = { input: state.inputs.audio?.handle, phase: 'analysis', stream: state.form.audioStream, integrated: state.form.loudness, lra: state.form.lra, truePeak: state.form.truePeak };
   try {
     const argv = build('loudnorm', values), label = `Analyze loudness · ${state.inputs.audio?.name || 'audio'}`;
-    const jobs = await apiCall('jobs.enqueue', { label, args: runtimeArgs(argv) });
-    const analysis = (Array.isArray(jobs) ? jobs : []).filter((job) => job.label === label).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+    const result = await apiCall('jobs.enqueue', { label, args: runtimeArgs(argv) });
+    const analysis = Array.isArray(result)
+      ? result.filter((job) => job.label === label).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0]
+      : result && typeof result === 'object' ? result : null;
     if (!analysis?.id) throw new Error('The analysis job was queued without an identifier.');
     state.loudnormPending[analysis.id] = { input: state.inputs.audio, output: state.outputs.audio, stream: state.form.audioStream, integrated: state.form.loudness, lra: state.form.lra, truePeak: state.form.truePeak, audioCodec: state.form.audioCodec };
     notify('Two-pass normalization started','Pass 1 is measuring the selected stream.'); state.view='jobs'; await refreshJobs();
@@ -528,9 +530,11 @@ function openRegex() {
 function filterJobEvent(payload) {
   if (!payload) return;
   if (Array.isArray(payload.jobs)) state.jobs=payload.jobs.slice(0,1000).map(normalizeJob);
-  else { const raw=payload.job||payload, normalized=normalizeJob(raw,0), index=state.jobs.findIndex((job)=>job.id===normalized.id); if(index>=0)state.jobs[index]=normalized; else state.jobs.unshift(normalized); completeLoudnorm(normalized); }
-  const raw=payload.job||payload;
-  if(state.settings.notifyComplete&&['completed','failed','cancelled','interrupted'].includes(raw.status)) notify('Job updated',`${raw.label||'Job'}: ${raw.status}`,raw.status==='failed'?'error':'info');
+  else if (payload.job && typeof payload.job === 'object') { const normalized=normalizeJob(payload.job,0), index=state.jobs.findIndex((job)=>job.id===normalized.id); if(index>=0)state.jobs[index]=normalized; else state.jobs.unshift(normalized); completeLoudnorm(normalized); }
+  else if (payload.type === 'cleared' && Array.isArray(payload.ids)) { const cleared=new Set(payload.ids.map(String)); state.jobs=state.jobs.filter((job)=>!cleared.has(job.id)); state.selectedJobs=new Set([...state.selectedJobs].filter((id)=>!cleared.has(id))); if(cleared.has(state.selectedJobId))state.selectedJobId=''; }
+  else return;
+  const raw=payload.job;
+  if(state.settings.notifyComplete&&raw&&['completed','failed','cancelled','interrupted'].includes(raw.status)) notify('Job updated',`${raw.label||'Job'}: ${raw.status}`,raw.status==='failed'?'error':'info');
   render();
 }
 

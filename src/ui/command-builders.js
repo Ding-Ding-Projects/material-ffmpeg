@@ -16,6 +16,7 @@
   const HLS_FLAGS = new Set(['delete_segments', 'independent_segments', 'append_list', 'temp_file', 'program_date_time', 'omit_endlist', 'split_by_time', 'discont_start', 'single_file', 'round_durations']);
   const STREAM_PROTOCOLS = new Set(['rtmp:', 'rtmps:', 'srt:', 'udp:', 'tcp:', 'rtsp:']);
   const COMPOSER_BLOCKED_OPTIONS = new Set(['-i', '-progress', '-nostdin', '-stdin', '-y', '-n', '-report', '-filter_script', '-filter_complex_script', '-vstats_file', '-passlogfile']);
+  const FILE_HANDLE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 
   function fail(field, message) {
     throw new TypeError(`${field}: ${message}`);
@@ -84,6 +85,12 @@
     return localPath(value, field, { allowPattern: Boolean(allowPattern) });
   }
 
+  function fileHandle(value, field) {
+    const result = token(value, field, { maxLength: 36, allowLeadingDash: false });
+    if (!FILE_HANDLE_RE.test(result)) fail(field, 'must be an opaque selected-file handle');
+    return result;
+  }
+
   function enumValue(value, fallback, values, field) {
     const result = value === undefined ? fallback : token(value, field);
     if (!values.has(result)) fail(field, `must be one of: ${[...values].join(', ')}`);
@@ -145,6 +152,10 @@
     if (!value.includes(':')) return Number(value);
     const parts = value.split(':');
     return (Number(parts[0]) * 3600) + (Number(parts[1]) * 60) + Number(parts[2]);
+  }
+
+  function secondsText(value) {
+    return String(Math.round(value * 1_000_000_000) / 1_000_000_000);
   }
 
   function streamSelector(value, fallback, field) {
@@ -262,19 +273,22 @@
   const TRIM_KEYS = new Set(['input', 'output', 'overwrite', 'progress', 'start', 'end', 'duration', 'mode', 'videoCodec', 'audioCodec', 'crf', 'preset', 'avoidNegativeTs', 'maps']);
   function trim(inputSpec) {
     const spec = object(inputSpec, 'trim', TRIM_KEYS);
-    const input = localPath(spec.input, 'input');
-    const output = outputPath(spec.output, 'output', false);
+    const input = fileHandle(spec.input, 'input');
+    const output = fileHandle(spec.output, 'output');
     const start = timeValue(spec.start, 'start', true);
     const end = timeValue(spec.end, 'end', true);
     const duration = timeValue(spec.duration, 'duration', true);
     if (end === undefined && duration === undefined) fail('trim', 'requires end or duration');
     if (end !== undefined && duration !== undefined) fail('trim', 'accepts end or duration, not both');
-    if (start !== undefined && end !== undefined && timeAsSeconds(end) <= timeAsSeconds(start)) fail('end', 'must be later than start');
+    const startSeconds = start === undefined ? 0 : timeAsSeconds(start);
+    const endSeconds = end === undefined ? undefined : timeAsSeconds(end);
+    const durationSeconds = duration === undefined ? undefined : timeAsSeconds(duration);
+    if (endSeconds !== undefined && endSeconds <= startSeconds) fail('end', 'must be later than start');
+    if (durationSeconds !== undefined && durationSeconds <= 0) fail('duration', 'must be greater than zero');
     const args = commonArgs(spec);
     if (start !== undefined) args.push('-ss', start);
     args.push('-i', input);
-    if (end !== undefined) args.push('-to', end);
-    else args.push('-t', duration);
+    args.push('-t', endSeconds === undefined ? duration : secondsText(endSeconds - startSeconds));
     addMaps(args, spec.maps);
     const mode = enumValue(spec.mode, 'copy', new Set(['copy', 'reencode']), 'mode');
     if (mode === 'copy') args.push('-c', 'copy');

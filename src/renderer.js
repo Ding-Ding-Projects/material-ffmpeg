@@ -85,7 +85,7 @@ const state = {
   loudnormPending: {},
   form: Object.assign({
     codec: 'libx264', container: 'mp4', crf: 20, preset: 'medium', tune: 'none', width: 1920, height: -2, fps: '',
-    trimStart: '00:00:00.000', trimEnd: '', trimDuration: '00:00:10.000', trimMode: 'copy', avoidNegative: true,
+    trimStart: '00:00:00.000', trimEnd: '', trimDuration: '00:00:10.000', trimMode: 'copy', trimContainer: 'mp4', avoidNegative: true,
     trimVideoCodec: 'libx264', trimAudioCodec: 'aac', trimCrf: 20, trimPreset: 'medium',
     loudness: -16, lra: 11, truePeak: -1.5, loudnormCodec: 'flac', audioCodec: 'copy', audioStream: '0:a:0',
     gifStart: '00:00:00.000', gifDuration: '00:00:05.000', gifFps: 15, gifWidth: 640, gifHeight: -2,
@@ -221,11 +221,16 @@ const runtimeArgs = (argv) => {
   });
 };
 const fileStem = (file, fallback = 'output') => bounded(file?.name || fallback, 180).replace(/\.[^.]+$/u, '').replace(/[\\/:*?"<>|]/gu, '_') || fallback;
+const TRIM_CONTAINERS = new Set(['mp4','mkv','mov','webm','m4v','ts']);
+const selectedTrimContainer = () => {
+  const container = bounded(state.form.trimContainer || 'mp4', 12).toLowerCase();
+  return TRIM_CONTAINERS.has(container) ? container : 'mp4';
+};
 const outputOptions = (slot) => {
   const selectedInput = state.inputs[slot];
   const definitions = {
     convert: { extension: state.form.container, label: state.form.container.toUpperCase() },
-    trim: { extension: 'mp4', label: 'MP4 video' },
+    trim: { extension: selectedTrimContainer(), label: `${selectedTrimContainer().toUpperCase()} media` },
     filters: { extension: 'mp4', label: 'MP4 video' },
     'audio-normalize': { extension: state.form.loudnormCodec === 'aac' ? 'm4a' : state.form.loudnormCodec === 'libopus' ? 'opus' : state.form.loudnormCodec.startsWith('pcm_') ? 'wav' : state.form.loudnormCodec, label: 'Normalized audio' },
     'audio-extract': { extension: state.form.audioCodec === 'aac' ? 'm4a' : state.form.audioCodec === 'libopus' ? 'opus' : state.form.audioCodec.startsWith('pcm_') ? 'wav' : state.form.audioCodec === 'copy' ? (selectedInput?.name?.split('.').pop()?.toLowerCase() || 'mka') : state.form.audioCodec, label: 'Extracted audio' },
@@ -248,6 +253,12 @@ const requireExtension = (file, extensions, label) => {
   if (!accepted.has(outputExtension(file))) throw new Error(`${label} must use ${[...accepted].map((extension) => `.${extension}`).join(' or ')}.`);
   return file;
 };
+const requireTrimSelection = (file, kind, label) => {
+  if (!file || file.kind !== kind || !HANDLE_RE.test(String(file.handle || ''))) {
+    throw new Error(`Choose a valid ${label} through the file picker first.`);
+  }
+  return file;
+};
 const convertValues = () => ({
   input: state.inputs.convert?.handle, output: requireExtension(state.outputs.convert, [state.form.container], 'conversion output').handle,
   videoCodec: state.form.codec, audioCodec: state.form.codec === 'copy' ? 'copy' : 'aac',
@@ -258,19 +269,24 @@ const convertValues = () => ({
   fps: state.form.codec === 'copy' ? undefined : state.form.fps || undefined,
   faststart: state.form.container === 'mp4', hwaccel: 'none'
 });
-const trimValues = () => ({
-  input: state.inputs.trim?.handle,
-  output: requireExtension(state.outputs.trim, ['mp4','mkv','mov','webm','m4v','ts'], 'trim output').handle,
-  start: state.form.trimStart || undefined,
-  end: state.form.trimEnd || undefined,
-  duration: state.form.trimEnd ? undefined : state.form.trimDuration || undefined,
-  mode: state.form.trimMode,
-  videoCodec: state.form.trimMode === 'reencode' ? state.form.trimVideoCodec : undefined,
-  audioCodec: state.form.trimMode === 'reencode' ? state.form.trimAudioCodec : undefined,
-  crf: state.form.trimMode === 'reencode' ? state.form.trimCrf : undefined,
-  preset: state.form.trimMode === 'reencode' ? state.form.trimPreset : undefined,
-  avoidNegativeTs: state.form.avoidNegative ? 'make_zero' : 'disabled'
-});
+const trimValues = () => {
+  const input = requireTrimSelection(state.inputs.trim, 'input', 'trim input');
+  const output = requireTrimSelection(state.outputs.trim, 'output', 'trim output');
+  const container = selectedTrimContainer();
+  return {
+    input: input.handle,
+    output: requireExtension(output, [container], 'trim output').handle,
+    start: state.form.trimStart || undefined,
+    end: state.form.trimEnd || undefined,
+    duration: state.form.trimEnd ? undefined : state.form.trimDuration || undefined,
+    mode: state.form.trimMode,
+    videoCodec: state.form.trimMode === 'reencode' ? state.form.trimVideoCodec : undefined,
+    audioCodec: state.form.trimMode === 'reencode' ? state.form.trimAudioCodec : undefined,
+    crf: state.form.trimMode === 'reencode' ? state.form.trimCrf : undefined,
+    preset: state.form.trimMode === 'reencode' ? state.form.trimPreset : undefined,
+    avoidNegativeTs: state.form.avoidNegative ? 'make_zero' : 'disabled'
+  };
+};
 const filtergraphValues = () => {
   const videoGraph = state.filters.filter((node) => (node.kind || (['loudnorm', 'atempo'].includes(node.name) ? 'audio' : 'video')) === 'video')
     .map((node) => node.options ? `${node.name}=${node.options}` : node.name).join(',');
@@ -390,6 +406,29 @@ async function enqueue(kind, values, label) {
   } catch (error) { notify('Could not queue job', error.message, 'error'); }
 }
 
+async function queueTrim() {
+  try {
+    if (!state.runtime.available) throw new Error(state.runtime.error || 'The bundled FFmpeg runtime is unavailable.');
+    const argv = build('trim', trimValues());
+    const args = runtimeArgs(argv);
+    const selectedInputs = args.filter((arg) => arg && typeof arg === 'object' && arg.kind === 'input');
+    const selectedOutputs = args.filter((arg) => arg && typeof arg === 'object' && arg.kind === 'output');
+    if (selectedInputs.length !== 1 || selectedOutputs.length !== 1) {
+      throw new Error('The trim command did not preserve exactly one trusted input and one trusted output selection.');
+    }
+    const label = bounded(state.outputs.trim?.name || 'Trim', 160);
+    const job = await apiCall('jobs.enqueue', { label, args });
+    if (!job || typeof job !== 'object' || !HANDLE_RE.test(String(job.id || '')) || !['queued', 'running'].includes(job.status)) {
+      throw new Error('The job queue did not return a valid queued or running trim job.');
+    }
+    notify('Trim queued', `${label} · ${job.status}`);
+    state.view = 'jobs';
+    await refreshJobs();
+  } catch (error) {
+    notify('Trim not queued', bounded(error?.message || 'The trim request was refused without an error detail.', 1000), 'error');
+  }
+}
+
 const normalizeJob = (job, index) => {
   const status = bounded(job.status ?? 'queued', 30).toLowerCase();
   const rawProgress = job.progress && typeof job.progress === 'object' ? job.progress : {};
@@ -494,16 +533,17 @@ const VIEWS = {
   trim: () => `${pageHead('Cut or re-encode', 'Trim & clip', 'Type exact timecodes and choose stream copy or frame-accurate output.', '<button class="filled" id="queue-trim">Queue trim</button>')}
     <div class="grid"><div class="card span7"><div class="list">${pickerCard('trim','Input')}${pickerCard('trim','Output',true)}</div><div class="two-col" style="margin-top:14px">
       ${field('In point (-ss)', input('trim-start', state.form.trimStart, 'text', 'placeholder="00:00:00.000"'))}
-      ${field('Out point (-to, overrides duration)', input('trim-end', state.form.trimEnd, 'text', 'placeholder="00:00:10.000"'))}
+      ${field('Out point (source time; overrides duration)', input('trim-end', state.form.trimEnd, 'text', 'placeholder="00:00:10.000"'))}
       ${field('Clip duration (-t, used when out point is blank)', input('trim-duration', state.form.trimDuration, 'text', 'placeholder="00:00:10.000"'))}
       ${field('Mode', select('trim-mode', ['copy','reencode'], state.form.trimMode))}
+      ${field('Output container', select('trim-container', ['mp4','mkv','mov','webm','m4v','ts'], state.form.trimContainer))}
       <label class="check-row"><input id="trim-negative" type="checkbox"${state.form.avoidNegative ? ' checked' : ''}> Avoid negative timestamps</label>
     </div><fieldset${state.form.trimMode === 'copy' ? ' disabled' : ''} style="margin-top:14px"><legend>Re-encode settings</legend><div class="two-col">
       ${field('Video encoder',select('trim-video-codec',['libx264','libx265','libsvtav1','libvpx-vp9'],state.form.trimVideoCodec))}
       ${field('Audio encoder',select('trim-audio-codec',['aac','flac','libopus','pcm_s24le'],state.form.trimAudioCodec))}
       ${field('CRF',input('trim-crf',state.form.trimCrf,'number','min="0" max="63"'))}
       ${field('Preset',select('trim-preset',['ultrafast','veryfast','fast','medium','slow','slower','veryslow'],state.form.trimPreset))}
-    </div></fieldset><p class="hint">Re-encode controls are unavailable in copy mode because stream copy does not consume them.</p></div><div class="card span5"><h2>Command preview</h2><pre class="cmd-pre">${esc(workflowPreview('trim',trimValues))}</pre></div></div>`,
+    </div></fieldset><p class="hint">Re-encode controls are unavailable in copy mode because stream copy does not consume them. An out point is converted to a positive clip duration after the selected start time.</p></div><div class="card span5"><h2>Command preview</h2><pre class="cmd-pre" id="trim-command-preview">${esc(workflowPreview('trim',trimValues))}</pre></div></div>`,
 
   filters: () => `${pageHead('Filtergraph', 'Node graph', 'Build a real ordered filter chain, edit each node, and queue it.', '<button class="outlined" id="add-filter">Add node</button><button class="filled" id="queue-filtergraph">Apply & queue</button>')}
     <div class="grid"><div class="card span7"><div class="list">${pickerCard('filters','Input')}${pickerCard('filters','Output',true)}</div><div class="graph" style="margin-top:14px">${state.filters.length ? state.filters.map((node,index) => `<button class="node${index === state.selectedFilter ? ' sel' : ''}" data-filter-index="${index}"><b>${esc(node.name)}</b><br><small>${esc(node.options || 'No options')}</small></button>`).join('<span class="ms">east</span>') : '<div class="empty-state">No filters. Add one to begin.</div>'}</div></div>
@@ -614,6 +654,7 @@ function updatePreviews() {
   const preview = $('#cmd-pre'); if (preview) preview.textContent = convertPreview(); $('#live-command').textContent = livePreview();
   const gifPreview = $('#gif-preview'); if (gifPreview) gifPreview.textContent = workflowPreview('gif', gifValues);
   const thumbnailPreview = $('#thumb-preview'); if (thumbnailPreview) thumbnailPreview.textContent = workflowPreview('thumbnails', thumbnailValues);
+  const trimPreview = $('#trim-command-preview'); if (trimPreview) trimPreview.textContent = workflowPreview('trim', trimValues);
   const composer = $('#composer-preview'); if (composer) {
     try { composer.textContent = commandPreview(build('composer', composerValues())); }
     catch (error) { composer.textContent = displayText(error.message, 'command detail'); }
@@ -677,7 +718,7 @@ function wireView() {
   $$('#palette-open,#palette-open-2').forEach((button) => button.onclick = openPalette);
   $$('.pick-input').forEach((button) => button.onclick = async () => { const files = await pickFile(button.dataset.slot, { multiple: false, purpose: button.dataset.slot }); if (files.length && ['audio','inspector'].includes(button.dataset.slot)) inspectSelected(button.dataset.slot); });
   $$('.pick-output').forEach((button) => button.onclick = () => chooseOutput(button.dataset.slot, Object.assign({ purpose: button.dataset.slot }, outputOptions(button.dataset.slot))));
-  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-mode','trimMode'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-codec','audioCodec'],['audio-stream','audioStream'],['gif-start','gifStart'],['gif-duration','gifDuration'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-height','gifHeight',true],['gif-scaler','gifScaler'],['gif-colors','gifColors',true],['gif-stats','gifStatsMode'],['gif-dither','gifDither'],['gif-bayer-scale','gifBayerScale',true],['gif-loop','gifLoop',true],['thumb-time','thumbTime'],['thumb-width','thumbWidth',true],['thumb-height','thumbHeight',true],['thumb-scaler','thumbScaler'],['thumb-quality','thumbQuality',true],['stream-target','streamTarget'],['stream-video-bitrate','streamVideoBitrate'],['stream-audio-bitrate','streamAudioBitrate'],['stream-resolution','streamResolution'],['stream-fps','streamFps'],['stream-gop','streamGop',true],['hls-time','hlsTime',true],['hls-list','hlsList',true],['hls-playlist-type','hlsPlaylistType'],['hls-segment-type','hlsSegmentType'],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
+  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-container','trimContainer'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-codec','audioCodec'],['audio-stream','audioStream'],['gif-start','gifStart'],['gif-duration','gifDuration'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-height','gifHeight',true],['gif-scaler','gifScaler'],['gif-colors','gifColors',true],['gif-stats','gifStatsMode'],['gif-dither','gifDither'],['gif-bayer-scale','gifBayerScale',true],['gif-loop','gifLoop',true],['thumb-time','thumbTime'],['thumb-width','thumbWidth',true],['thumb-height','thumbHeight',true],['thumb-scaler','thumbScaler'],['thumb-quality','thumbQuality',true],['stream-target','streamTarget'],['stream-video-bitrate','streamVideoBitrate'],['stream-audio-bitrate','streamAudioBitrate'],['stream-resolution','streamResolution'],['stream-fps','streamFps'],['stream-gop','streamGop',true],['hls-time','hlsTime',true],['hls-list','hlsList',true],['hls-playlist-type','hlsPlaylistType'],['hls-segment-type','hlsSegmentType'],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
   const gifDither = $('#gif-dither'); if (gifDither) gifDither.onchange = () => { state.form.gifDither = gifDither.value; saveUi(); render(); };
   const thumbnailFormat = $('#thumb-format'); if (thumbnailFormat) thumbnailFormat.onchange = () => {
     state.form.thumbFormat = thumbnailFormat.value === 'png' ? 'png' : 'jpg';
@@ -685,13 +726,14 @@ function wireView() {
     if (state.outputs.thumbs && !expected.has(outputExtension(state.outputs.thumbs))) delete state.outputs.thumbs;
     saveUi(); render();
   };
+  const trimMode = $('#trim-mode'); if (trimMode) trimMode.onchange = () => { state.form.trimMode = trimMode.value; saveUi(); render(); };
   const streamMode = $('#stream-mode'); if (streamMode) streamMode.onchange = () => { state.form.streamMode = streamMode.value; saveUi(); render(); };
   const streamRealtime = $('#stream-realtime'); if (streamRealtime) streamRealtime.onchange = () => { state.form.streamRealtime = streamRealtime.checked; saveUi(); updatePreviews(); };
   const streamLowLatency = $('#stream-low-latency'); if (streamLowLatency) streamLowLatency.onchange = () => { state.form.streamLowLatency = streamLowLatency.checked; saveUi(); updatePreviews(); };
   const trimNegative = $('#trim-negative'); if (trimNegative) trimNegative.onchange = () => { state.form.avoidNegative = trimNegative.checked; saveUi(); };
 
   $('#queue-convert')?.addEventListener('click', () => enqueue('convert', convertValues, state.outputs.convert?.name || 'Convert'));
-  $('#queue-trim')?.addEventListener('click', () => enqueue('trim', trimValues, state.outputs.trim?.name || 'Trim'));
+  $('#queue-trim')?.addEventListener('click', queueTrim);
   $('#queue-filtergraph')?.addEventListener('click', () => enqueue('filtergraph', filtergraphValues, state.outputs.filters?.name || 'Filtergraph'));
   $('#queue-loudnorm')?.addEventListener('click', queueLoudnormAnalysis);
   $('#queue-extract')?.addEventListener('click', () => enqueue('extract', extractValues, state.outputs['audio-extract']?.name || 'Extract audio'));

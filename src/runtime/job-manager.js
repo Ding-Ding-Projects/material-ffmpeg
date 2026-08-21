@@ -88,6 +88,16 @@ class JobManager extends EventEmitter {
     return this.order.map((id) => this.jobs.get(id)).filter(Boolean).map((job) => this._publicJob(job));
   }
 
+  setConcurrency(value) {
+    if (!Number.isInteger(value) || value < 1 || value > 4) {
+      throw new TypeError('Job concurrency must be an integer from 1 through 4.');
+    }
+    this.concurrency = value;
+    this._schedule();
+    this.emit('event', { type: 'concurrency-changed', concurrency: this.concurrency });
+    return this.concurrency;
+  }
+
   async pause(id) {
     const job = this._requireJob(id);
     const child = this.processes.get(id);

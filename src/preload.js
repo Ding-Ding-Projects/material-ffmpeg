@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('api', Object.freeze({
   jobs: Object.freeze({
     enqueue: (spec) => ipcRenderer.invoke('jobs:enqueue', spec),
     list: () => ipcRenderer.invoke('jobs:list'),
+    setConcurrency: (value) => ipcRenderer.invoke('jobs:set-concurrency', value),
     pause: (id) => ipcRenderer.invoke('jobs:pause', id),
     resume: (id) => ipcRenderer.invoke('jobs:resume', id),
     cancel: (id) => ipcRenderer.invoke('jobs:cancel', id),

@@ -96,6 +96,7 @@ function registerIpc(runtime) {
   trustedHandle('probe:export', (spec) => runtime.exportProbe(spec));
   trustedHandle('jobs:enqueue', (spec) => jobs.enqueue(spec));
   trustedHandle('jobs:list', () => jobs.list());
+  trustedHandle('jobs:set-concurrency', (value) => jobs.setConcurrency(value));
   trustedHandle('jobs:pause', (id) => jobs.pause(id));
   trustedHandle('jobs:resume', (id) => jobs.resume(id));
   trustedHandle('jobs:cancel', (id) => jobs.cancel(id));

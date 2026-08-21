@@ -59,7 +59,7 @@ const normalizeFunnyLevel = (value) => {
 const normalizeSettings = (value) => {
   const input = value && typeof value === 'object' ? value : {};
   return Object.assign({}, DEFAULT_SETTINGS, input, {
-    parallel: clamp(input.parallel ?? DEFAULT_SETTINGS.parallel, 1, 8),
+    parallel: clamp(input.parallel ?? DEFAULT_SETTINGS.parallel, 1, 4),
     preferHardware: input.preferHardware !== false,
     keepPassLogs: Boolean(input.keepPassLogs),
     notifyComplete: input.notifyComplete !== false,
@@ -484,7 +484,7 @@ const VIEWS = {
   converter: () => `${pageHead('Media conversion', 'File converter', 'Add a real batch, inspect actual media types, choose a supported target, and queue each file.', '<button class="outlined" id="converter-add">Add files</button><button class="filled" id="queue-converter">Queue supported files</button>')}<div class="grid"><div class="card span7"><div class="list">${state.converterFiles.length ? state.converterFiles.map((file,index) => `<div class="list-item"><span class="ms">draft</span><span style="flex:1"><b>${esc(displayText(file.name, 'input file'))}</b><br><small>${esc(displayText(file.details || file.kind || 'Type will be validated by the runtime', 'file detail'))}</small></span><span class="tag${file.supported ? '' : ' idle'}">${file.supported ? 'READY' : 'UNSUPPORTED'}</span><button class="converter-remove" data-index="${index}">×</button></div>`).join('') : '<div class="empty-state"><b>No files added</b><br><small>The runtime performs bounded byte detection; extensions are not trusted.</small></div>'}</div></div><div class="card span5"><h2>Target</h2>${field('Output type',select('converter-target',['mp4','mkv','webm','mp3','flac','wav','png','jpg'],state.form.converterTarget))}<p class="notice">Media conversions may be lossy. Originals remain untouched and each queued result is validated by the runtime.</p></div></div>`,
 
   settings: () => `${pageHead('Application', 'Settings', 'Execution, appearance, and message voice preferences persist locally.', '')}<div class="grid"><div class="card span6"><h2>Appearance</h2><div class="seg"><button id="theme-dark" class="${state.theme === 'dark' ? 'active' : ''}">Dark</button><button id="theme-light" class="${state.theme === 'light' ? 'active' : ''}">Light</button></div><button class="tonal" id="logo-settings" style="margin-top:14px">Customize app logo</button></div>
-    <div class="card span6"><h2>Execution</h2>${field('Parallel jobs',input('setting-parallel',state.settings.parallel,'number','min="1" max="8"'))}<label class="check-row"><input id="setting-hardware" type="checkbox"${state.settings.preferHardware ? ' checked' : ''}> Prefer hardware encoders reported by runtime</label><label class="check-row"><input id="setting-passlogs" type="checkbox"${state.settings.keepPassLogs ? ' checked' : ''}> Keep intermediate two-pass logs</label><label class="check-row"><input id="setting-notify" type="checkbox"${state.settings.notifyComplete ? ' checked' : ''}> Notify on job completion</label></div>
+    <div class="card span6"><h2>Execution</h2>${field('Parallel jobs (1–4)',input('setting-parallel',state.settings.parallel,'number','min="1" max="4"'))}<p class="hint">Saving applies this limit immediately to the trusted job scheduler. Running jobs continue; newly available slots start queued work.</p><label class="check-row"><input id="setting-hardware" type="checkbox"${state.settings.preferHardware ? ' checked' : ''}> Prefer hardware encoders reported by runtime</label><label class="check-row"><input id="setting-passlogs" type="checkbox"${state.settings.keepPassLogs ? ' checked' : ''}> Keep intermediate two-pass logs</label><label class="check-row"><input id="setting-notify" type="checkbox"${state.settings.notifyComplete ? ' checked' : ''}> Notify on job completion</label></div>
     <div class="card full"><h2>Funny levels</h2><p class="hint">English and Cantonese keep independent voice levels from 1 (fully serious) to 5 (maximum playfulness). New and reset profiles start at 5. Voice can change; file names, exit status, affected data, and recovery actions never do.</p><div class="two-col">
       <div><label class="field"><span>English — level <output id="setting-funny-en-output">${state.settings.englishFunny}</output></span><input id="setting-funny-en" type="range" min="1" max="5" step="1" value="${state.settings.englishFunny}" aria-describedby="setting-funny-en-preview"></label><p class="notice" id="setting-funny-en-preview">${esc(funnyPreview('english', state.settings.englishFunny))}</p></div>
       <div><label class="field"><span lang="zh-HK">廣東話 — 程度 <output id="setting-funny-yue-output">${state.settings.cantoneseFunny}</output></span><input id="setting-funny-yue" type="range" min="1" max="5" step="1" value="${state.settings.cantoneseFunny}" aria-describedby="setting-funny-yue-preview"></label><p class="notice" id="setting-funny-yue-preview" lang="zh-HK">${esc(funnyPreview('cantonese', state.settings.cantoneseFunny))}</p></div>
@@ -650,7 +650,23 @@ function wireView() {
     notify('Funny levels reset', 'English and Cantonese are both set to level 5. Message facts remain unchanged.');
     render();
   });
-  $('#save-settings')?.addEventListener('click', () => { state.settings.parallel = clamp($('#setting-parallel').value,1,8); state.settings.preferHardware = $('#setting-hardware').checked; state.settings.keepPassLogs = $('#setting-passlogs').checked; state.settings.notifyComplete = $('#setting-notify').checked; state.settings.englishFunny = normalizeFunnyLevel($('#setting-funny-en').value); state.settings.cantoneseFunny = normalizeFunnyLevel($('#setting-funny-yue').value); saveUi(); notify('Settings saved','Execution and message voice preferences are now active.'); render(); });
+  $('#save-settings')?.addEventListener('click', async () => {
+    const requestedParallel = clamp($('#setting-parallel').value, 1, 4);
+    try {
+      const appliedParallel = await apiCall('jobs.setConcurrency', requestedParallel);
+      state.settings.parallel = clamp(appliedParallel, 1, 4);
+      state.settings.preferHardware = $('#setting-hardware').checked;
+      state.settings.keepPassLogs = $('#setting-passlogs').checked;
+      state.settings.notifyComplete = $('#setting-notify').checked;
+      state.settings.englishFunny = normalizeFunnyLevel($('#setting-funny-en').value);
+      state.settings.cantoneseFunny = normalizeFunnyLevel($('#setting-funny-yue').value);
+      saveUi();
+      notify('Settings saved', `The trusted scheduler now allows ${state.settings.parallel} parallel job${state.settings.parallel === 1 ? '' : 's'}.`);
+      render();
+    } catch (error) {
+      notify('Settings not saved', error.message, 'error');
+    }
+  });
 }
 
 const go = (view) => { state.view = VIEWS[view] ? view : 'overview'; render(); };
@@ -860,7 +876,10 @@ $('#appearance-reset').onclick=()=>{delete state.settings.appearance;saveUi();ap
 window.addEventListener('keydown',(event)=>{if(event.ctrlKey&&event.shiftKey&&event.key.toLowerCase()==='f'){event.preventDefault();openPalette();}});
 
 async function initialize() {
-  render(); await Promise.all([refreshRuntime(),refreshJobs()]);
+  render();
+  try { state.settings.parallel = clamp(await apiCall('jobs.setConcurrency', state.settings.parallel), 1, 4); saveUi(); }
+  catch(error){notify('Parallel-job setting unavailable',error.message,'error');}
+  await Promise.all([refreshRuntime(),refreshJobs()]);
   try { const unsubscribe=window.api?.jobs?.onEvent?.(filterJobEvent); if(typeof unsubscribe==='function')window.addEventListener('beforeunload',unsubscribe,{once:true}); }
   catch(error){notify('Live job updates unavailable',error.message,'error');}
 }

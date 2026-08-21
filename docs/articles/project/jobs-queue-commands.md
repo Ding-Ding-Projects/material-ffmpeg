@@ -12,7 +12,7 @@ Completed file-producing jobs are considered successful only when every expected
 
 ## Configuration
 
-Runtime concurrency defaults to two and is clamped to one through four by `JobManager`. The queue retains at most 1,000 jobs, 500 terminal history records, 500 log lines per job, and 4,000 characters per log line. Cancellation first writes `q` to FFmpeg and uses a bounded forced termination fallback.
+Runtime concurrency defaults to two and is clamped to one through four by `JobManager`. The Settings control applies that value through a trusted IPC method, and the scheduler immediately re-evaluates queued work without interrupting jobs already in progress. The queue retains at most 1,000 jobs, 500 terminal history records, 500 log lines per job, and 4,000 characters per log line. Cancellation first writes `q` to FFmpeg and uses a bounded forced termination fallback.
 
 ## Failure modes
 

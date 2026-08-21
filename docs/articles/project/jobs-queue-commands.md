@@ -34,9 +34,11 @@ The implementation and bounds are present in source. No live loudness pass, queu
 
 The visual-output surface converts renderer-visible UUIDs into typed input/output handle entries only after the GIF or still builder accepts the selected values. GIF jobs use one selected `.gif` destination. Still jobs use a selected `.jpg`, `.jpeg`, or `.png` destination, seek to a bounded timestamp, and force a one-frame output. The queue resolves those handles to paths in the privileged process and independently requires each declared output to exist and contain bytes before marking the job complete.
 
-The visible command is a preview, not a shell command. File paths remain opaque handles until the trusted process compiles them. The command composer blocks process-control and path-bearing options such as `-i`, `-progress`, `-y`, report paths, filter scripts, and pass-log paths.
+The command composer separates global, input, and output option rows. A guided output-format selector owns `-f`; native file pickers own `-i` and the final output. The renderer limits each option field to 8,000 characters, the combined composer to 120 option rows, the final vector to 256 arguments, and the visible preview to 12,000 characters.
 
-Source inspection confirms the builders call the queue bridge. It does not prove the exact bundled FFmpeg build accepts every generated argument vector.
+The visible command is a preview, not a shell command. Enqueueing uses a dedicated `composer:enqueue` IPC route rather than submitting the preview or a caller-provided executable. The main process rebuilds the vector from the structured specification, verifies that every UUID is a live file-registry handle of the expected input or output kind, converts those UUIDs to `JobManager` file-handle arguments, and then queues the job. Executable names, shell operators, local paths, protocol targets, response files, path-reading filters, process-control options, implicit file outputs, and path-bearing options such as `-i`, `-progress`, `-report`, filter scripts, segment paths, attachment paths, and pass-log paths are rejected.
+
+The dedicated source route is present, but it was not launched or exercised during this ultra-speed pass. The source wiring does not prove that the exact bundled FFmpeg build accepts a particular composed argument vector.
 
 ## Suggested articles
 

@@ -7,6 +7,7 @@ const { FileRegistry } = require('./runtime/file-registry');
 const { JobManager } = require('./runtime/job-manager');
 const { RuntimeService } = require('./runtime/runtime-service');
 const { resolveExecutables } = require('./runtime/safe-process');
+const { composer: buildComposerArgs } = require('./ui/command-builders');
 
 let mainWindow = null;
 let jobs = null;
@@ -106,6 +107,7 @@ function registerIpc(runtime) {
 
   trustedHandle('probe:inspect', (fileHandle) => runtime.inspect(fileHandle));
   trustedHandle('probe:export', (spec) => runtime.exportProbe(spec));
+  trustedHandle('composer:enqueue', (request) => jobs.enqueue(compileComposerJob(request, files)));
   trustedHandle('jobs:enqueue', (spec) => jobs.enqueue(spec));
   trustedHandle('jobs:list', () => jobs.list());
   trustedHandle('jobs:set-concurrency', (value) => jobs.setConcurrency(value));
@@ -135,6 +137,28 @@ function normalizeDialogFilters(value) {
     }
     return { name: filter.name.trim(), extensions: [...filter.extensions] };
   });
+}
+
+function compileComposerJob(request, registry) {
+  if (!request || typeof request !== 'object' || Array.isArray(request) ||
+    Object.keys(request).some((key) => key !== 'label' && key !== 'spec')) {
+    throw new TypeError('Composer request must contain only a label and structured specification.');
+  }
+  const args = buildComposerArgs(Object.assign({}, request.spec, { overwrite: true, progress: false }));
+  const handleKinds = new Map();
+  const registerHandle = (handle, expectedKind) => {
+    const description = registry.describe(handle);
+    if (description.kind !== expectedKind) throw new TypeError(`Composer ${expectedKind} selection has the wrong handle kind.`);
+    handleKinds.set(handle, expectedKind);
+  };
+  request.spec.inputs.forEach((input) => registerHandle(input.source, 'input'));
+  request.spec.outputs.forEach((output) => registerHandle(output.target, 'output'));
+  return {
+    label: request.label === undefined ? 'Composed command' : request.label,
+    args: args.map((argument) => handleKinds.has(argument)
+      ? { fileHandle: argument, kind: handleKinds.get(argument) }
+      : argument)
+  };
 }
 
 app.whenReady().then(() => {

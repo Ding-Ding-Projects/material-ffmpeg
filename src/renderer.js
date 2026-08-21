@@ -33,6 +33,23 @@ const loudnormSessionId = (() => {
     return created;
   } catch (_) { return crypto.randomUUID(); }
 })();
+const COMPOSER_TEXT_LIMIT = 8000;
+const COMPOSER_PREVIEW_LIMIT = 12000;
+const COMPOSER_OPTION_LIMIT = 120;
+const COMPOSER_FORMATS = Object.freeze({
+  mp4: { extension: 'mp4', extensions: ['mp4'], label: 'MP4 video' },
+  matroska: { extension: 'mkv', extensions: ['mkv'], label: 'Matroska media' },
+  webm: { extension: 'webm', extensions: ['webm'], label: 'WebM media' },
+  mov: { extension: 'mov', extensions: ['mov'], label: 'QuickTime media' },
+  mpegts: { extension: 'ts', extensions: ['ts', 'm2ts'], label: 'MPEG transport stream' },
+  mp3: { extension: 'mp3', extensions: ['mp3'], label: 'MP3 audio' },
+  flac: { extension: 'flac', extensions: ['flac'], label: 'FLAC audio' },
+  wav: { extension: 'wav', extensions: ['wav'], label: 'WAV audio' },
+  ogg: { extension: 'ogg', extensions: ['ogg', 'oga'], label: 'Ogg media' },
+  opus: { extension: 'opus', extensions: ['opus'], label: 'Opus audio' },
+  gif: { extension: 'gif', extensions: ['gif'], label: 'GIF image' },
+  image2: { extension: 'png', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'], label: 'Single image' }
+});
 const store = {
   get(key, fallback) { try { return JSON.parse(localStorage.getItem(`material-ffmpeg.${key}`)) ?? fallback; } catch { return fallback; } },
   set(key, value) { try { localStorage.setItem(`material-ffmpeg.${key}`, JSON.stringify(value)); } catch { } }
@@ -113,6 +130,7 @@ const state = {
     streamMode: 'hls', streamTarget: '', hlsTime: 6, hlsList: 6, hlsPlaylistType: 'live', hlsSegmentType: 'mpegts',
     streamVideoBitrate: '4500k', streamAudioBitrate: '128k', streamResolution: 'source', streamFps: 'source', streamGop: 60,
     streamRealtime: true, streamLowLatency: true,
+    composerFormat: 'mp4', composerGlobalArgs: '', composerInputArgs: '',
     composerArgs: '-c:v\nlibx264\n-c:a\naac', converterTarget: 'mp4'
   }, store.get('form', {}))
 };
@@ -120,6 +138,7 @@ const state = {
 // explicit credentials. Keep this field session-only and discard values saved
 // by older versions before rendering the first view.
 state.form.streamTarget = '';
+if (!Object.hasOwn(COMPOSER_FORMATS, state.form.composerFormat)) state.form.composerFormat = 'mp4';
 
 const saveUi = () => {
   store.set('theme', state.theme); store.set('logo', state.logo); store.set('tabs', state.tabs);
@@ -223,7 +242,8 @@ function build(kind, values) {
   if (typeof fn !== 'function') throw new Error(`Command builder unavailable: ${kind}`);
   const result = fn(Object.assign({ overwrite: true }, values, { progress: false })); const argv = Array.isArray(result) ? result : result?.argv;
   if (!Array.isArray(argv) || argv.some((arg) => typeof arg !== 'string')) throw new Error(`Invalid ${kind} command result`);
-  return argv.slice(0, 512).map((arg) => bounded(arg, 4096));
+  if (argv.length > 256) throw new Error(`${kind} produced more than 256 arguments.`);
+  return argv.map((arg) => bounded(arg, 4096));
 }
 const allFiles = () => [...Object.values(state.inputs), ...Object.values(state.outputs), ...state.converterFiles].filter(Boolean);
 const runtimeArgs = (argv, selectedFiles = allFiles()) => {
@@ -245,6 +265,7 @@ const selectedTrimContainer = () => {
   const container = bounded(state.form.trimContainer || 'mp4', 12).toLowerCase();
   return TRIM_CONTAINERS.has(container) ? container : 'mp4';
 };
+const composerOutputDefinition = () => COMPOSER_FORMATS[state.form.composerFormat] || COMPOSER_FORMATS.mp4;
 const outputOptions = (slot) => {
   const selectedInput = state.inputs[slot];
   const definitions = {
@@ -256,13 +277,13 @@ const outputOptions = (slot) => {
     gif: { extension: 'gif', label: 'GIF image' },
     thumbs: state.form.thumbFormat === 'png' ? { extension: 'png', label: 'PNG image' } : { extension: 'jpg', label: 'JPEG image' },
     streaming: { extension: 'm3u8', label: 'HLS playlist' },
-    composer: { extension: 'mp4', label: 'Media output' }
+    composer: composerOutputDefinition()
   };
   const definition = definitions[slot] || { extension: 'mp4', label: 'Media output' };
   const source = slot.startsWith('audio-') ? state.inputs.audio : selectedInput;
   return {
     suggestedName: `${fileStem(source)}-${slot.replace(/^audio-/u, '')}.${definition.extension}`,
-    filters: [{ name: definition.label, extensions: [definition.extension] }]
+    filters: [{ name: definition.label, extensions: definition.extensions || [definition.extension] }]
   };
 };
 const outputExtension = (file) => file?.name?.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
@@ -739,7 +760,10 @@ const VIEWS = {
       <div class="list">${jobRows(true)}</div><div class="card" style="margin-top:14px"><div class="section-head"><h2>${selected ? esc(displayText(selected.label, 'job')) : 'Job log'}</h2><input id="log-search" placeholder="Filter log lines"></div>${selected?.error ? `<p class="notice" style="color:var(--danger)"><b>Failure:</b> ${esc(displayText(selected.error, 'job error'))}</p>` : ''}<div class="log-pane" id="log-pane">${logs.length ? logs.map((line) => `<div>${esc(displayText(line, 'job file'))}</div>`).join('') : '<div>No log lines available.</div>'}</div></div>`;
   },
 
-  composer: () => `${pageHead('Structured argv', 'Command composer', 'One argument per line. The renderer never parses or executes a shell string.', '<button class="filled" id="queue-composer">Queue command</button>')}<div class="grid"><div class="card span5"><div class="list">${pickerCard('composer','Input')}${pickerCard('composer','Output',true)}</div><p class="hint">Blank lines are ignored. Executable names and shell operators are rejected by the builder.</p></div><div class="card span7">${field('Arguments',`<textarea id="composer-args" class="mono" rows="18">${esc(state.form.composerArgs)}</textarea>`)}<pre class="cmd-pre" id="composer-preview"></pre></div></div>`,
+  composer: () => {
+    const preview = composerPreviewState();
+    return `${pageHead('Structured argv', 'Command composer', 'Build one bounded FFmpeg argument vector without entering an executable, shell command, or local path.', '<button class="filled" id="queue-composer">Queue command</button>')}<div class="grid"><div class="card span5"><h2>Trusted files and output</h2><div class="list">${pickerCard('composer','Input')}${pickerCard('composer','Output',true)}</div>${field('Output format', select('composer-format', Object.keys(COMPOSER_FORMATS), state.form.composerFormat))}<p class="notice">The format selector owns <code>-f</code>. The native pickers own <code>-i</code> and the final output. Those managed arguments cannot be typed below.</p><p class="hint">Blank lines are ignored. Executable names, shell operators, protocols, local paths, path-reading options, and implicit file outputs are rejected before enqueueing.</p></div><div class="card span7"><h2>Scoped option rows</h2><p class="hint">Enter one option name per line, followed by its scalar value on the next line. A flag needs no value.</p><div class="two-col">${field('Global options',`<textarea id="composer-global-args" class="mono" rows="6" maxlength="${COMPOSER_TEXT_LIMIT}" placeholder="-loglevel&#10;warning">${esc(state.form.composerGlobalArgs)}</textarea>`)}${field('Input options',`<textarea id="composer-input-args" class="mono" rows="6" maxlength="${COMPOSER_TEXT_LIMIT}" placeholder="-ss&#10;00:00:05.000">${esc(state.form.composerInputArgs)}</textarea>`)}</div>${field('Output options',`<textarea id="composer-args" class="mono" rows="8" maxlength="${COMPOSER_TEXT_LIMIT}" placeholder="-c:v&#10;libx264">${esc(state.form.composerArgs)}</textarea>`)}<h2>Bounded preview</h2><p class="notice" id="composer-error" role="alert"${preview.error ? '' : ' hidden'}>${esc(preview.error)}</p><pre class="cmd-pre" id="composer-preview">${esc(preview.text)}</pre><small id="composer-preview-facts">${esc(preview.facts)}</small></div></div>`;
+  },
 
   converter: () => `${pageHead('Media conversion', 'File converter', 'Add a real batch, inspect actual media types, choose a supported target, and queue each file.', '<button class="outlined" id="converter-add">Add files</button><button class="filled" id="queue-converter">Queue supported files</button>')}<div class="grid"><div class="card span7"><div class="list">${state.converterFiles.length ? state.converterFiles.map((file,index) => `<div class="list-item"><span class="ms">draft</span><span style="flex:1"><b>${esc(displayText(file.name, 'input file'))}</b><br><small>${esc(displayText(file.details || file.kind || 'Type will be validated by the runtime', 'file detail'))}</small></span><span class="tag${file.supported ? '' : ' idle'}">${file.supported ? 'READY' : 'UNSUPPORTED'}</span><button class="converter-remove" data-index="${index}">×</button></div>`).join('') : '<div class="empty-state"><b>No files added</b><br><small>The runtime performs bounded byte detection; extensions are not trusted.</small></div>'}</div></div><div class="card span5"><h2>Target</h2>${field('Output type',select('converter-target',['mp4','mkv','webm','mp3','flac','wav','png','jpg'],state.form.converterTarget))}<p class="notice">Media conversions may be lossy. Originals remain untouched and each queued result is validated by the runtime.</p></div></div>`,
 
@@ -797,24 +821,81 @@ function updatePreviews() {
   const thumbnailPreview = $('#thumb-preview'); if (thumbnailPreview) thumbnailPreview.textContent = workflowPreview('thumbnails', thumbnailValues);
   const trimPreview = $('#trim-command-preview'); if (trimPreview) trimPreview.textContent = workflowPreview('trim', trimValues);
   const composer = $('#composer-preview'); if (composer) {
-    try { composer.textContent = commandPreview(build('composer', composerValues())); }
-    catch (error) { composer.textContent = displayText(error.message, 'command detail'); }
+    const result = composerPreviewState(), error = $('#composer-error'), facts = $('#composer-preview-facts');
+    composer.textContent = result.text;
+    if (error) { error.textContent = result.error; error.hidden = !result.error; }
+    if (facts) facts.textContent = result.facts;
   }
 }
 
-function composerValues() {
-  const lines = state.form.composerArgs.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+function parseComposerOptions(value, scope) {
+  const text = String(value ?? '');
+  if (text.length > COMPOSER_TEXT_LIMIT) throw new Error(`${scope} options exceed ${COMPOSER_TEXT_LIMIT} characters.`);
+  const lines = text.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
   const options = [];
   const optionName = /^-{1,2}[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}$/u;
   for (let index = 0; index < lines.length; index += 1) {
     const name = lines[index];
-    if (/^ffmpeg(?:\.exe)?$/iu.test(name) || /[|;&`]/u.test(name)) throw new Error('Composer accepts FFmpeg option rows, not a shell command.');
-    if (!optionName.test(name)) throw new Error(`Expected a valid FFmpeg option name, received: ${name}`);
+    if (/^(?:ffmpeg|ffprobe|cmd|powershell|pwsh|bash|sh|zsh|wsl)(?:\.exe)?$/iu.test(name) || /(?:[|&;`<>]|\$\(|\$\{)/u.test(name)) {
+      throw new Error(`${scope} accepts option rows, not executable names or shell syntax.`);
+    }
+    if (!optionName.test(name)) throw new Error(`${scope} expected an FFmpeg option name on row ${index + 1}.`);
     const next = lines[index + 1];
     const nextIsOption = next && optionName.test(next) && !/^-\d+(?:\.\d+)?$/u.test(next);
     options.push({ name, value: next && !nextIsOption ? (index += 1, next) : true });
   }
-  return { inputs: [{ source: state.inputs.composer?.handle }], outputs: [{ target: state.outputs.composer?.handle, options }] };
+  return options;
+}
+
+function composerValues() {
+  const input = state.inputs.composer;
+  if (!input || input.kind !== 'input' || !HANDLE_RE.test(input.handle)) throw new Error('Choose a valid composer input with the native file picker.');
+  const definition = composerOutputDefinition();
+  const output = requireExtension(state.outputs.composer, definition.extensions, 'composer output');
+  const globalOptions = parseComposerOptions(state.form.composerGlobalArgs, 'Global options');
+  const inputOptions = parseComposerOptions(state.form.composerInputArgs, 'Input options');
+  const outputOptions = parseComposerOptions(state.form.composerArgs, 'Output options');
+  const optionCount = globalOptions.length + inputOptions.length + outputOptions.length;
+  if (optionCount > COMPOSER_OPTION_LIMIT) throw new Error(`Composer accepts at most ${COMPOSER_OPTION_LIMIT} option rows across all scopes.`);
+  return {
+    globalOptions,
+    inputs: [{ source: input.handle, options: inputOptions }],
+    outputs: [{ target: output.handle, format: state.form.composerFormat, options: outputOptions }]
+  };
+}
+
+function composerPreviewState() {
+  try {
+    const argv = build('composer', composerValues());
+    const command = commandPreview(previewArgs(argv));
+    const clipped = command.length > COMPOSER_PREVIEW_LIMIT;
+    return {
+      text: clipped ? `${command.slice(0, COMPOSER_PREVIEW_LIMIT)}…` : command,
+      error: '',
+      facts: `${argv.length} structured arguments · ${Math.min(command.length, COMPOSER_PREVIEW_LIMIT).toLocaleString()} preview characters${clipped ? ' · preview truncated at the documented limit' : ''}`
+    };
+  } catch (error) {
+    return {
+      text: 'Preview unavailable until every required selection and option is valid.',
+      error: bounded(displayText(error.message, 'command detail'), 1000),
+      facts: `Preview limit: ${COMPOSER_PREVIEW_LIMIT.toLocaleString()} characters · option limit: ${COMPOSER_OPTION_LIMIT}`
+    };
+  }
+}
+
+async function queueComposer() {
+  try {
+    if (!state.runtime.available) throw new Error(state.runtime.error || 'The bundled FFmpeg runtime is unavailable.');
+    const spec = composerValues();
+    build('composer', spec);
+    await apiCall('composer.enqueue', { label: bounded(state.outputs.composer?.name || 'Composed command', 160), spec });
+    notify('Command queued', state.outputs.composer?.name || 'Composed command');
+    state.view = 'jobs';
+    await refreshJobs();
+  } catch (error) {
+    notify('Could not queue composed command', error.message, 'error');
+    updatePreviews();
+  }
 }
 
 async function queueLoudnormAnalysis() {
@@ -1028,8 +1109,13 @@ function wireView() {
   $('#jobs-cancel')?.addEventListener('click', () => openConfirm('Cancel selected jobs?', 'Running processes will receive a graceful cancellation request.', () => runJobAction('cancel')));
   $('#jobs-back')?.addEventListener('click', moveSelectedToBack); $('#clear-finished')?.addEventListener('click', clearFinished); $('#log-search')?.addEventListener('input', filterLogs);
 
-  const composer = $('#composer-args'); if (composer) { composer.oninput = () => { state.form.composerArgs = composer.value.slice(0,20000); saveUi(); updatePreviews(); }; updatePreviews(); }
-  $('#queue-composer')?.addEventListener('click', () => enqueue('composer', composerValues, state.outputs.composer?.name || 'Composed command'));
+  [['composer-global-args','composerGlobalArgs'],['composer-input-args','composerInputArgs'],['composer-args','composerArgs']].forEach(([id,key]) => {
+    const control = $(`#${id}`);
+    if (control) control.oninput = () => { state.form[key] = control.value.slice(0, COMPOSER_TEXT_LIMIT); saveUi(); updatePreviews(); };
+  });
+  const composerFormat = $('#composer-format'); if (composerFormat) composerFormat.onchange = () => { state.form.composerFormat = composerFormat.value; saveUi(); render(); };
+  if ($('#composer-preview')) updatePreviews();
+  $('#queue-composer')?.addEventListener('click', queueComposer);
   $('#converter-add')?.addEventListener('click', addConverterFiles); $('#queue-converter')?.addEventListener('click', queueConverterFiles);
   $$('.converter-remove').forEach((button) => button.onclick = () => { state.converterFiles.splice(Number(button.dataset.index),1); render(); });
 

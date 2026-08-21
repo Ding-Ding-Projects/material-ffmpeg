@@ -27,6 +27,9 @@ contextBridge.exposeInMainWorld('api', Object.freeze({
   loudnorm: Object.freeze({
     retainSelections: (spec) => ipcRenderer.invoke('loudnorm:retain-selections', spec)
   }),
+  composer: Object.freeze({
+    enqueue: (request) => ipcRenderer.invoke('composer:enqueue', request)
+  }),
   jobs: Object.freeze({
     enqueue: (spec) => ipcRenderer.invoke('jobs:enqueue', spec),
     list: () => ipcRenderer.invoke('jobs:list'),

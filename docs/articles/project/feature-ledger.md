@@ -59,7 +59,7 @@ The current interaction evidence belongs to source commit `5358582f13b6af418e58c
 | Thumbnails | Source-wired | Unrun | Builder and destination flow are present. |
 | HLS, RTMP, and SRT streaming | Source-wired | Unrun | Guided encoding controls, HLS selected-handle derivatives, mode-matched URLs, session-only target handling, and queue submission are present. |
 | RTMP and SRT transport | Source-wired | Unrun | Transport builders are packaged; no exact-commit interaction receipt was produced. |
-| Command composer | Source-wired | Unrun | Dangerous/path-bearing options are blocked. |
+| Command composer | Source-wired | Unrun | Dedicated structured IPC rebuilds bounded arguments from live selected handles; executable, shell, path-bearing, and implicit-output input is blocked. |
 | Batch converter | Source-wired | Unrun | Eight media adapters are currently mapped. |
 | Inspector and probe export | Source-wired | Inspector working; snapshot exports unrun | Real H.264 320x180 and AAC input was inspected. JSON preserves the bounded snapshot; CSV and XML use the documented row-per-node schema through a trusted output handle. None of the three exports were interacted with. |
 | Runtime catalogs and help | Source-wired | Codecs working; other kinds and help unrun | The live codecs catalog returned 539 entries. |

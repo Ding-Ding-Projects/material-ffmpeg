@@ -15,7 +15,7 @@ This ledger describes the installed desktop application and distinguishes source
 | GIF creation | Source-wired | Not verified in this pass | Palette/fps/dither controls are present. |
 | Thumbnails | Source-wired | Not verified in this pass | Builder and destination flow are present. |
 | HLS, RTMP, and SRT streaming | Source-wired | Not verified in this pass | Guided encoding controls, HLS selected-handle derivatives, mode-matched URLs, session-only target handling, and queue submission are present. |
-| Command composer | Source-wired | Not verified in this pass | Dangerous/path-bearing options are blocked. |
+| Command composer | Source-wired | Not verified in this pass | Dedicated structured IPC rebuilds bounded arguments from live selected handles; executable, shell, path-bearing, and implicit-output input is blocked. |
 | Batch converter | Source-wired | Not verified in this pass | Eight media adapters are currently mapped. |
 | Inspector and probe export | Source-wired | Not verified in this pass | Retains the bounded FFprobe JSON snapshot and exports JSON or documented row-per-node CSV/XML through a native save destination. |
 | Runtime catalogs and help | Source-wired | Not verified in this pass | Data is queried from the bundled build. |

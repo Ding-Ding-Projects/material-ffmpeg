@@ -7,6 +7,7 @@
   const MAX_TOKEN_LENGTH = 8192;
   const MAX_FILTER_LENGTH = 32768;
   const MAX_COLLECTION_LENGTH = 128;
+  const MAX_COMPOSER_OPTIONS = 120;
   const FORBIDDEN_ROOT_KEYS = new Set(['bin', 'binary', 'command', 'executable', 'shell']);
   const VIDEO_CODECS = new Set(['copy', 'libx264', 'libx265', 'libsvtav1', 'libvpx-vp9', 'prores_ks', 'h264_nvenc', 'hevc_nvenc', 'av1_nvenc', 'h264_qsv', 'hevc_qsv', 'av1_qsv']);
   const AUDIO_CODECS = new Set(['copy', 'aac', 'libopus', 'libmp3lame', 'flac', 'pcm_s16le', 'pcm_s24le', 'pcm_f32le', 'vorbis']);
@@ -15,8 +16,18 @@
   const SCALERS = new Set(['fast_bilinear', 'bilinear', 'bicubic', 'experimental', 'neighbor', 'area', 'bicublin', 'gauss', 'sinc', 'lanczos', 'spline']);
   const HLS_FLAGS = new Set(['delete_segments', 'independent_segments', 'append_list', 'temp_file', 'program_date_time', 'omit_endlist', 'split_by_time', 'discont_start', 'single_file', 'round_durations']);
   const STREAM_PROTOCOLS = new Set(['rtmp:', 'rtmps:', 'srt:', 'udp:', 'tcp:', 'rtsp:']);
-  const COMPOSER_BLOCKED_OPTIONS = new Set(['-i', '-progress', '-nostdin', '-stdin', '-y', '-n', '-report', '-filter_script', '-filter_complex_script', '-vstats_file', '-passlogfile']);
   const FILE_HANDLE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+  const COMPOSER_BLOCKED_OPTIONS = new Set([
+    '-i', '-f', '-progress', '-nostdin', '-stdin', '-y', '-n', '-report', '-vstats',
+    '-vf', '-af', '-filter', '-filter:v', '-filter:a', '-filter_complex', '-lavfi',
+    '-filter_script', '-filter_complex_script', '-attach', '-dump_attachment',
+    '-hls_segment_filename', '-hls_fmp4_init_filename', '-segment_list', '-segment_list_entry_prefix',
+    '-passlogfile', '-vstats_file', '-sdp_file', '-protocol_whitelist', '-protocol_blacklist'
+  ]);
+  const COMPOSER_OUTPUT_FORMATS = new Set(['mp4', 'matroska', 'webm', 'mov', 'mpegts', 'mp3', 'flac', 'wav', 'ogg', 'opus', 'gif', 'image2']);
+  const COMPOSER_EXECUTABLE = /^(?:ffmpeg|ffprobe|cmd|powershell|pwsh|bash|sh|zsh|wsl)(?:\.exe)?$/iu;
+  const COMPOSER_SHELL_OPERATOR = /(?:[|&;`<>]|\$\(|\$\{)/u;
+  const COMPOSER_LOCAL_PATH = /^(?:[a-z]:[\\/]|\\\\|\/|~[\\/]|\.{1,2}[\\/]|file:|[a-z][a-z0-9+.-]*:)/iu;
 
   function fail(field, message) {
     throw new TypeError(`${field}: ${message}`);
@@ -615,8 +626,19 @@
 
   const OPTION_KEYS = new Set(['name', 'value']);
   const COMPOSER_INPUT_KEYS = new Set(['source', 'options']);
-  const COMPOSER_OUTPUT_KEYS = new Set(['target', 'options']);
+  const COMPOSER_OUTPUT_KEYS = new Set(['target', 'format', 'options']);
   const COMPOSER_KEYS = new Set(['overwrite', 'progress', 'globalOptions', 'inputs', 'outputs']);
+  function composerValue(value, field) {
+    const result = token(value, field);
+    if (COMPOSER_EXECUTABLE.test(result)) fail(field, 'must not name an executable');
+    if (COMPOSER_SHELL_OPERATOR.test(result)) fail(field, 'contains a shell operator');
+    if (COMPOSER_LOCAL_PATH.test(result) || result.startsWith('@') ||
+      /(?:^|[=,:])[^=,:\s]+\.[a-z][a-z0-9]{0,11}(?:$|[,;])/iu.test(result)) {
+      fail(field, 'must not contain a local path, protocol target, response file, or path-reading filter');
+    }
+    return result;
+  }
+
   function appendStructuredOptions(args, entries, field) {
     if (entries === undefined) return;
     if (!Array.isArray(entries) || entries.length > MAX_COLLECTION_LENGTH) fail(field, `must be an array of at most ${MAX_COLLECTION_LENGTH} option entries`);
@@ -624,12 +646,12 @@
       const option = object(entry, `${field}[${index}]`, OPTION_KEYS);
       const name = token(option.name, `${field}[${index}].name`);
       if (!/^-{1,2}[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}$/u.test(name)) fail(`${field}[${index}].name`, 'must be one FFmpeg option name');
-      if (COMPOSER_BLOCKED_OPTIONS.has(name)) fail(`${field}[${index}].name`, 'is managed by the runtime and cannot be overridden');
+      if (COMPOSER_BLOCKED_OPTIONS.has(name.toLocaleLowerCase('en-US'))) fail(`${field}[${index}].name`, 'is managed by the runtime or can read or write an unmanaged path');
       if (option.value === false || option.value === undefined || option.value === null) return;
       args.push(name);
       if (option.value !== true) {
         if (Array.isArray(option.value) || isPlainObject(option.value)) fail(`${field}[${index}].value`, 'must be a scalar token');
-        args.push(token(option.value, `${field}[${index}].value`));
+        args.push(composerValue(option.value, `${field}[${index}].value`));
       }
     });
   }
@@ -643,18 +665,23 @@
     spec.inputs.forEach((entry, index) => {
       const input = object(entry, `inputs[${index}]`, COMPOSER_INPUT_KEYS);
       appendStructuredOptions(args, input.options, `inputs[${index}].options`);
-      args.push('-i', localPath(input.source, `inputs[${index}].source`));
+      args.push('-i', fileHandle(input.source, `inputs[${index}].source`));
     });
     const destinations = new Set();
     spec.outputs.forEach((entry, index) => {
       const output = object(entry, `outputs[${index}]`, COMPOSER_OUTPUT_KEYS);
       appendStructuredOptions(args, output.options, `outputs[${index}].options`);
-      const destination = outputPath(output.target, `outputs[${index}].target`, true);
+      const destination = fileHandle(output.target, `outputs[${index}].target`);
       const key = destination.toLocaleLowerCase('en-US');
       if (destinations.has(key)) fail(`outputs[${index}].target`, 'duplicates another output');
       destinations.add(key);
-      args.push(destination);
+      args.push('-f', enumValue(output.format, 'mp4', COMPOSER_OUTPUT_FORMATS, `outputs[${index}].format`), destination);
     });
+    const optionCount = (spec.globalOptions?.length || 0) +
+      spec.inputs.reduce((count, input) => count + (input.options?.length || 0), 0) +
+      spec.outputs.reduce((count, output) => count + (output.options?.length || 0), 0);
+    if (optionCount > MAX_COMPOSER_OPTIONS) fail('composer', `must contain at most ${MAX_COMPOSER_OPTIONS} option rows across all scopes`);
+    if (args.length > 256) fail('composer', 'produces more than 256 arguments after managed input and output arguments are added');
     return freezeArgv(args);
   }
 
@@ -757,7 +784,8 @@
     converter,
   });
 
-  Object.defineProperty(root, 'FFmpegCommandBuilders', {
+  if (typeof module === 'object' && module && module.exports) module.exports = api;
+  else Object.defineProperty(root, 'FFmpegCommandBuilders', {
     configurable: false,
     enumerable: true,
     writable: false,

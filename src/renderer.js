@@ -6,6 +6,8 @@ const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selec
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const bounded = (value, max = 500) => String(value ?? '').slice(0, max);
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0));
+const HANDLE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+const DERIVED_OUTPUT_MARKER = '__DERIVED_OUTPUT__';
 const store = {
   get(key, fallback) { try { return JSON.parse(localStorage.getItem(`material-ffmpeg.${key}`)) ?? fallback; } catch { return fallback; } },
   set(key, value) { try { localStorage.setItem(`material-ffmpeg.${key}`, JSON.stringify(value)); } catch { } }
@@ -72,9 +74,10 @@ const state = {
   loudnormPending: {},
   form: Object.assign({
     codec: 'libx264', container: 'mp4', crf: 20, preset: 'medium', tune: 'none', width: 1920, height: -2, fps: '',
-    trimStart: '00:00:00.000', trimEnd: '', trimMode: 'copy', avoidNegative: true,
-    loudness: -16, lra: 11, truePeak: -1.5, audioCodec: 'flac', audioStream: '0:a:0',
-    gifFps: 15, gifWidth: 640, gifColors: 128, thumbInterval: 10,
+    trimStart: '00:00:00.000', trimEnd: '', trimDuration: '00:00:10.000', trimMode: 'copy', avoidNegative: true,
+    trimVideoCodec: 'libx264', trimAudioCodec: 'aac', trimCrf: 20, trimPreset: 'medium',
+    loudness: -16, lra: 11, truePeak: -1.5, loudnormCodec: 'flac', audioCodec: 'copy', audioStream: '0:a:0',
+    gifFps: 15, gifWidth: 640, gifColors: 128, thumbTime: '00:00:00.000',
     streamMode: 'hls', streamTarget: '', hlsTime: 6, hlsList: 6,
     composerArgs: '-c:v\nlibx264\n-c:a\naac', converterTarget: 'mp4'
   }, store.get('form', {}))
@@ -125,14 +128,17 @@ const apiCall = async (path, ...args) => {
 };
 
 const normalizeFiles = (result) => (Array.isArray(result) ? result : result ? [result] : []).slice(0, 500).map((item, index) => {
-  if (typeof item === 'string') return { handle: item, name: item.split(/[\\/]/).pop() || `File ${index + 1}`, supported: true };
+  if (!item || typeof item !== 'object' || Array.isArray(item) || !HANDLE_RE.test(String(item.handle || ''))) return null;
+  const kind = item.kind === 'input' || item.kind === 'output' ? item.kind : '';
+  if (!kind) return null;
   return {
-    handle: item.handle ?? item.id ?? item.token ?? item.path,
-    name: bounded(item.name ?? item.displayName ?? item.path?.split(/[\\/]/).pop() ?? `File ${index + 1}`, 240),
-    kind: bounded(item.kind ?? item.type ?? '', 80), details: bounded(item.details ?? item.detectedType ?? '', 300),
+    handle: String(item.handle),
+    name: bounded(item.name || `Selected file ${index + 1}`, 240),
+    kind,
+    details: bounded(item.details || '', 300),
     supported: item.supported !== false
   };
-}).filter((item) => item.handle);
+}).filter(Boolean);
 
 async function pickFile(slot, options = {}) {
   try {
@@ -154,12 +160,30 @@ async function chooseOutput(slot, options = {}) {
 
 const quotePreview = (arg) => /[\s"']/u.test(arg) ? `"${String(arg).replace(/["\\]/g, '\\$&')}"` : String(arg);
 const commandPreview = (argv) => ['ffmpeg', ...(Array.isArray(argv) ? argv : [])].map(quotePreview).join(' ');
-const previewArgs = (argv) => { const names=new Map(allFiles().map((file)=>[file.handle,file.name]));return argv.map((arg)=>names.get(arg)||arg); };
+const derivedOutput = (file, suffix) => {
+  if (!file || file.kind !== 'output' || !HANDLE_RE.test(file.handle)) throw new Error('Choose a valid output destination first.');
+  if (typeof suffix !== 'string' || !/^[A-Za-z0-9._%()=-]{1,180}$/u.test(suffix)) throw new Error('Derived output suffix is invalid.');
+  return `${file.handle}${DERIVED_OUTPUT_MARKER}${suffix}`;
+};
+const splitDerivedOutput = (value) => {
+  if (typeof value !== 'string') return null;
+  const marker = value.indexOf(DERIVED_OUTPUT_MARKER);
+  if (marker < 0) return null;
+  const handle = value.slice(0, marker), suffix = value.slice(marker + DERIVED_OUTPUT_MARKER.length);
+  return HANDLE_RE.test(handle) && /^[A-Za-z0-9._%()=-]{1,180}$/u.test(suffix) ? { handle, suffix } : null;
+};
+const previewArgs = (argv) => {
+  const names = new Map(allFiles().map((file) => [file.handle, file.name]));
+  return argv.map((arg) => {
+    const derived = splitDerivedOutput(arg);
+    return derived && names.has(derived.handle) ? `${names.get(derived.handle)}${derived.suffix}` : names.get(arg) || arg;
+  });
+};
 function build(kind, values) {
   const builders = window.FFmpegCommandBuilders || window.commandBuilders || {};
   const fn = builders[kind] || (builders.build && ((v) => builders.build(kind, v)));
   if (typeof fn !== 'function') throw new Error(`Command builder unavailable: ${kind}`);
-  const result = fn(Object.assign({}, values, { progress: false })); const argv = Array.isArray(result) ? result : result?.argv;
+  const result = fn(Object.assign({ overwrite: true }, values, { progress: false })); const argv = Array.isArray(result) ? result : result?.argv;
   if (!Array.isArray(argv) || argv.some((arg) => typeof arg !== 'string')) throw new Error(`Invalid ${kind} command result`);
   return argv.slice(0, 512).map((arg) => bounded(arg, 4096));
 }
@@ -167,34 +191,162 @@ const allFiles = () => [...Object.values(state.inputs), ...Object.values(state.o
 const runtimeArgs = (argv) => {
   const handles = new Map(allFiles().map((file) => [file.handle, file]));
   return argv.map((arg) => {
+    const derived = splitDerivedOutput(arg);
+    if (derived) {
+      const file = handles.get(derived.handle);
+      if (!file || file.kind !== 'output') throw new Error('A derived output no longer has a valid selected destination.');
+      return { fileHandle: file.handle, kind: 'output', suffix: derived.suffix };
+    }
     const file = handles.get(arg);
     return file ? { fileHandle: file.handle, kind: file.kind === 'output' || Object.values(state.outputs).some((value) => value?.handle === file.handle) ? 'output' : 'input' } : arg;
   });
 };
+const fileStem = (file, fallback = 'output') => bounded(file?.name || fallback, 180).replace(/\.[^.]+$/u, '').replace(/[\\/:*?"<>|]/gu, '_') || fallback;
+const outputOptions = (slot) => {
+  const selectedInput = state.inputs[slot];
+  const definitions = {
+    convert: { extension: state.form.container, label: state.form.container.toUpperCase() },
+    trim: { extension: 'mp4', label: 'MP4 video' },
+    filters: { extension: 'mp4', label: 'MP4 video' },
+    'audio-normalize': { extension: state.form.loudnormCodec === 'aac' ? 'm4a' : state.form.loudnormCodec === 'libopus' ? 'opus' : state.form.loudnormCodec.startsWith('pcm_') ? 'wav' : state.form.loudnormCodec, label: 'Normalized audio' },
+    'audio-extract': { extension: state.form.audioCodec === 'aac' ? 'm4a' : state.form.audioCodec === 'libopus' ? 'opus' : state.form.audioCodec.startsWith('pcm_') ? 'wav' : state.form.audioCodec === 'copy' ? (selectedInput?.name?.split('.').pop()?.toLowerCase() || 'mka') : state.form.audioCodec, label: 'Extracted audio' },
+    gif: { extension: 'gif', label: 'GIF image' },
+    thumbs: { extension: 'jpg', label: 'JPEG image' },
+    streaming: { extension: 'm3u8', label: 'HLS playlist' },
+    composer: { extension: 'mp4', label: 'Media output' }
+  };
+  const definition = definitions[slot] || { extension: 'mp4', label: 'Media output' };
+  const source = slot.startsWith('audio-') ? state.inputs.audio : selectedInput;
+  return {
+    suggestedName: `${fileStem(source)}-${slot.replace(/^audio-/u, '')}.${definition.extension}`,
+    filters: [{ name: definition.label, extensions: [definition.extension] }]
+  };
+};
+const outputExtension = (file) => file?.name?.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
+const requireExtension = (file, extensions, label) => {
+  if (!file) throw new Error(`Choose the ${label} destination first.`);
+  const accepted = new Set(extensions.map((extension) => extension.toLowerCase()));
+  if (!accepted.has(outputExtension(file))) throw new Error(`${label} must use ${[...accepted].map((extension) => `.${extension}`).join(' or ')}.`);
+  return file;
+};
 const convertValues = () => ({
-  input: state.inputs.convert?.handle, output: state.outputs.convert?.handle,
+  input: state.inputs.convert?.handle, output: requireExtension(state.outputs.convert, [state.form.container], 'conversion output').handle,
   videoCodec: state.form.codec, audioCodec: state.form.codec === 'copy' ? 'copy' : 'aac',
   crf: state.form.codec === 'copy' ? undefined : state.form.crf, preset: state.form.codec === 'copy' ? undefined : state.form.preset,
-  tune: state.form.codec === 'copy' ? undefined : state.form.tune, width: state.form.width, height: state.form.height,
-  fps: state.form.fps || undefined, faststart: state.form.container === 'mp4', hwaccel: 'none'
+  tune: state.form.codec === 'copy' ? undefined : state.form.tune,
+  width: state.form.codec === 'copy' ? undefined : state.form.width,
+  height: state.form.codec === 'copy' ? undefined : state.form.height,
+  fps: state.form.codec === 'copy' ? undefined : state.form.fps || undefined,
+  faststart: state.form.container === 'mp4', hwaccel: 'none'
 });
-const safePreview = () => { try { return commandPreview(previewArgs(build('convert', convertValues()))); } catch (error) { return error.message; } };
+const trimValues = () => ({
+  input: state.inputs.trim?.handle,
+  output: requireExtension(state.outputs.trim, ['mp4','mkv','mov','webm','m4v','ts'], 'trim output').handle,
+  start: state.form.trimStart || undefined,
+  end: state.form.trimEnd || undefined,
+  duration: state.form.trimEnd ? undefined : state.form.trimDuration || undefined,
+  mode: state.form.trimMode,
+  videoCodec: state.form.trimMode === 'reencode' ? state.form.trimVideoCodec : undefined,
+  audioCodec: state.form.trimMode === 'reencode' ? state.form.trimAudioCodec : undefined,
+  crf: state.form.trimMode === 'reencode' ? state.form.trimCrf : undefined,
+  preset: state.form.trimMode === 'reencode' ? state.form.trimPreset : undefined,
+  avoidNegativeTs: state.form.avoidNegative ? 'make_zero' : 'disabled'
+});
+const filtergraphValues = () => {
+  const videoGraph = state.filters.filter((node) => (node.kind || (['loudnorm', 'atempo'].includes(node.name) ? 'audio' : 'video')) === 'video')
+    .map((node) => node.options ? `${node.name}=${node.options}` : node.name).join(',');
+  const audioGraph = state.filters.filter((node) => (node.kind || (['loudnorm', 'atempo'].includes(node.name) ? 'audio' : 'video')) === 'audio')
+    .map((node) => node.options ? `${node.name}=${node.options}` : node.name).join(',');
+  return {
+    input: state.inputs.filters?.handle,
+    output: requireExtension(state.outputs.filters, ['mp4','mkv','mov'], 'filtergraph output').handle,
+    videoGraph: videoGraph || undefined,
+    audioGraph: audioGraph || undefined,
+    videoCodec: videoGraph ? 'libx264' : 'copy',
+    audioCodec: audioGraph ? 'aac' : 'copy',
+    crf: videoGraph ? state.form.crf : undefined,
+    preset: videoGraph ? state.form.preset : undefined
+  };
+};
+const extractValues = () => ({
+  input: state.inputs.audio?.handle,
+  streams: [{ selector: state.form.audioStream, output: requireExtension(state.outputs['audio-extract'], [outputOptions('audio-extract').filters[0].extensions[0]], 'extracted audio output').handle, codec: state.form.audioCodec }]
+});
+const gifValues = () => ({ input: state.inputs.gif?.handle, output: requireExtension(state.outputs.gif, ['gif'], 'GIF output').handle, fps: state.form.gifFps, width: state.form.gifWidth, maxColors: state.form.gifColors });
+const thumbnailValues = () => ({ input: state.inputs.thumbs?.handle, outputPattern: requireExtension(state.outputs.thumbs, ['jpg','jpeg'], 'thumbnail output').handle, start: state.form.thumbTime, mode: 'thumbnail', batchSize: 100, count: 1, quality: 2 });
+const streamingValues = () => state.form.streamMode === 'hls'
+  ? {
+      input: state.inputs.streaming?.handle,
+      output: requireExtension(state.outputs.streaming, ['m3u8'], 'HLS playlist').handle,
+      hlsTime: state.form.hlsTime,
+      listSize: state.form.hlsList,
+      segmentFilename: state.outputs.streaming ? derivedOutput(state.outputs.streaming, '.segment-%05d.ts') : undefined,
+      flags: ['independent_segments', 'temp_file'],
+      videoCodec: 'libx264',
+      audioCodec: 'aac'
+    }
+  : {
+      input: state.inputs.streaming?.handle,
+      target: state.form.streamTarget,
+      format: state.form.streamMode === 'rtmp' ? 'flv' : 'mpegts',
+      videoCodec: 'libx264',
+      audioCodec: 'aac',
+      realtime: true,
+      lowLatency: true
+    };
+const workflowPreview = (kind, values) => {
+  try { return commandPreview(previewArgs(build(kind, typeof values === 'function' ? values() : values))); }
+  catch (error) { return bounded(error.message, 1000); }
+};
+const convertPreview = () => workflowPreview('convert', convertValues);
+const currentWorkflow = () => {
+  if (state.view === 'trim') return ['trim', trimValues];
+  if (state.view === 'filters') return ['filtergraph', filtergraphValues];
+  if (state.view === 'audio') return ['extract', extractValues];
+  if (state.view === 'gif') return ['gif', gifValues];
+  if (state.view === 'streaming') return [state.form.streamMode === 'hls' ? 'hls' : 'stream', streamingValues];
+  if (state.view === 'composer') return ['composer', composerValues];
+  return ['convert', convertValues];
+};
+const livePreview = () => { const [kind, values] = currentWorkflow(); return workflowPreview(kind, values); };
 
 async function enqueue(kind, values, label) {
   try {
-    const argv = build(kind, values);
+    if (!state.runtime.available) throw new Error(state.runtime.error || 'The bundled FFmpeg runtime is unavailable.');
+    const resolvedValues = typeof values === 'function' ? values() : values;
+    const argv = build(kind, resolvedValues);
     await apiCall('jobs.enqueue', { label: bounded(label || kind, 160), args: runtimeArgs(argv) });
     notify('Job queued', bounded(label ?? kind, 160)); state.view = 'jobs'; await refreshJobs();
   } catch (error) { notify('Could not queue job', error.message, 'error'); }
 }
 
-const normalizeJob = (job, index) => ({
-  id: String(job.id ?? job.jobId ?? index), label: bounded(job.label ?? job.name ?? `Job ${index + 1}`, 200),
-  kind: bounded(job.kind ?? 'ffmpeg', 60), status: bounded(job.status ?? 'queued', 30).toLowerCase(),
-  progress: clamp(job.progress?.percent ?? job.percent ?? 0, 0, 100), speed: bounded(job.progress?.speed ?? job.speed ?? '', 50),
-  exitCode: job.exitCode, argv: Array.isArray(job.argv || job.args) ? (job.argv || job.args).map((arg) => bounded(typeof arg === 'string' ? arg : arg?.name || '[selected file]', 4096)).slice(0, 512) : [],
-  logs: Array.isArray(job.logs) ? job.logs.slice(-1000).map((line) => bounded(line, 4000)) : [], error: bounded(job.error ?? '', 1000)
-});
+const normalizeJob = (job, index) => {
+  const status = bounded(job.status ?? 'queued', 30).toLowerCase();
+  const rawProgress = job.progress && typeof job.progress === 'object' ? job.progress : {};
+  const reportedPercent = Number(rawProgress.percent ?? job.percent);
+  const progress = Number.isFinite(reportedPercent) ? clamp(reportedPercent, 0, 100) : status === 'completed' ? 100 : null;
+  const progressFacts = [
+    rawProgress.out_time ? `media ${bounded(rawProgress.out_time, 40)}` : '',
+    rawProgress.frame !== undefined ? `frame ${bounded(rawProgress.frame, 30)}` : '',
+    rawProgress.total_size !== undefined ? `${bounded(rawProgress.total_size, 30)} bytes` : '',
+    rawProgress.speed ? `speed ${bounded(rawProgress.speed, 30)}` : '',
+    rawProgress.progress ? bounded(rawProgress.progress, 30) : ''
+  ].filter(Boolean).join(' · ');
+  const outputError = job.outputValidation && job.outputValidation.valid === false ? job.outputValidation.error : '';
+  return {
+    id: String(job.id ?? job.jobId ?? index),
+    label: bounded(job.label ?? job.name ?? `Job ${index + 1}`, 200),
+    kind: bounded(job.kind ?? 'ffmpeg', 60),
+    status,
+    progress,
+    progressText: bounded(progressFacts, 240),
+    speed: bounded(rawProgress.speed ?? job.speed ?? '', 50),
+    exitCode: Number.isInteger(job.exitCode) ? job.exitCode : null,
+    argv: Array.isArray(job.argv || job.args) ? (job.argv || job.args).map((arg) => bounded(typeof arg === 'string' ? arg : arg?.name || '[selected file]', 4096)).slice(0, 512) : [],
+    logs: Array.isArray(job.logs) ? job.logs.slice(-1000).map((line) => bounded(line, 4000)) : [],
+    error: bounded(job.error || outputError || '', 1000)
+  };
+};
 
 async function refreshJobs() {
   try {
@@ -206,11 +358,11 @@ async function refreshJobs() {
 const jobRows = (selectable = false) => state.jobs.length ? state.jobs.map((job) => `<div class="list-item job-row" data-job-id="${esc(job.id)}">
   ${selectable ? `<input class="job-select" type="checkbox" data-job-id="${esc(job.id)}"${state.selectedJobs.has(job.id) ? ' checked' : ''}>` : ''}
   <span class="ms">${job.status === 'completed' ? 'check_circle' : job.status === 'failed' ? 'error' : 'movie'}</span>
-  <span style="flex:1;min-width:0"><b>${esc(job.label)}</b><br><small class="mono">${esc(job.argv.length ? commandPreview(job.argv) : job.kind)}</small></span>
+  <span style="flex:1;min-width:0"><b>${esc(job.label)}</b><br><small class="mono">${esc(job.argv.length ? commandPreview(job.argv) : job.progressText || job.kind)}</small>${job.error ? `<br><small style="color:var(--danger)">${esc(job.error)}</small>` : ''}</span>
   <span class="tag${['completed', 'cancelled', 'failed'].includes(job.status) ? ' idle' : ''}">${esc(job.status.toUpperCase())}</span>
   <b class="mono" style="font-size:11px;color:var(--muted)">${esc(job.speed || (job.exitCode != null ? `exit ${job.exitCode}` : ''))}</b>
   <button class="job-focus" data-job-id="${esc(job.id)}" title="Open job log"><span class="ms">receipt_long</span></button>
-  <div class="progress-track" style="grid-column:1/-1"><span style="width:${job.progress}%"></span></div></div>`).join('') : '<div class="empty-state"><b>No jobs yet</b><br><small>Choose a real input and output, then queue an operation.</small></div>';
+  <div class="progress-track" style="grid-column:1/-1" role="progressbar"${job.progress === null ? ` aria-valuetext="${esc(job.progressText || job.status)}"` : ` aria-valuemin="0" aria-valuemax="100" aria-valuenow="${job.progress}"`}><span style="width:${job.progress === null ? 0 : job.progress}%"></span></div></div>`).join('') : '<div class="empty-state"><b>No jobs yet</b><br><small>Choose a real input and output, then queue an operation.</small></div>';
 
 const field = (label, control) => `<label class="field"><span>${esc(label)}</span>${control}</label>`;
 const input = (id, value, type = 'text', extra = '') => `<input id="${id}" type="${type}" value="${esc(value)}" ${extra}>`;
@@ -246,28 +398,34 @@ const VIEWS = {
       ${field('Frame rate (blank keeps source)', input('convert-fps', state.form.fps, 'text', 'placeholder="24000/1001"'))}
       ${field('Width', input('convert-width', state.form.width, 'number'))}${field('Height (-2 keeps aspect)', input('convert-height', state.form.height, 'number'))}
     </div></div><div class="span5" style="display:grid;gap:14px"><div class="card"><h2>Input → output</h2><div class="list">${pickerCard('convert','Input')}${pickerCard('convert','Output',true)}</div></div>
-    <div class="card"><h2>Live command</h2><pre class="cmd-pre" id="cmd-pre">${esc(safePreview())}</pre><button class="tonal" id="copy-current-command">Copy preview</button></div></div></div>`,
+    <div class="card"><h2>Live command</h2><pre class="cmd-pre" id="cmd-pre">${esc(convertPreview())}</pre><button class="tonal" id="copy-current-command">Copy preview</button></div></div></div>`,
 
   trim: () => `${pageHead('Cut or re-encode', 'Trim & clip', 'Type exact timecodes and choose stream copy or frame-accurate output.', '<button class="filled" id="queue-trim">Queue trim</button>')}
     <div class="grid"><div class="card span7"><div class="list">${pickerCard('trim','Input')}${pickerCard('trim','Output',true)}</div><div class="two-col" style="margin-top:14px">
       ${field('In point (-ss)', input('trim-start', state.form.trimStart, 'text', 'placeholder="00:00:00.000"'))}
-      ${field('Out point (-to, optional)', input('trim-end', state.form.trimEnd, 'text', 'placeholder="00:00:10.000"'))}
+      ${field('Out point (-to, overrides duration)', input('trim-end', state.form.trimEnd, 'text', 'placeholder="00:00:10.000"'))}
+      ${field('Clip duration (-t, used when out point is blank)', input('trim-duration', state.form.trimDuration, 'text', 'placeholder="00:00:10.000"'))}
       ${field('Mode', select('trim-mode', ['copy','reencode'], state.form.trimMode))}
       <label class="check-row"><input id="trim-negative" type="checkbox"${state.form.avoidNegative ? ' checked' : ''}> Avoid negative timestamps</label>
-    </div></div><div class="card span5"><h2>Preview</h2><div class="empty-state">A real preview becomes available after a file is selected and inspected.</div></div></div>`,
+    </div><fieldset${state.form.trimMode === 'copy' ? ' disabled' : ''} style="margin-top:14px"><legend>Re-encode settings</legend><div class="two-col">
+      ${field('Video encoder',select('trim-video-codec',['libx264','libx265','libsvtav1','libvpx-vp9'],state.form.trimVideoCodec))}
+      ${field('Audio encoder',select('trim-audio-codec',['aac','flac','libopus','pcm_s24le'],state.form.trimAudioCodec))}
+      ${field('CRF',input('trim-crf',state.form.trimCrf,'number','min="0" max="63"'))}
+      ${field('Preset',select('trim-preset',['ultrafast','veryfast','fast','medium','slow','slower','veryslow'],state.form.trimPreset))}
+    </div></fieldset><p class="hint">Re-encode controls are unavailable in copy mode because stream copy does not consume them.</p></div><div class="card span5"><h2>Command preview</h2><pre class="cmd-pre">${esc(workflowPreview('trim',trimValues))}</pre></div></div>`,
 
   filters: () => `${pageHead('Filtergraph', 'Node graph', 'Build a real ordered filter chain, edit each node, and queue it.', '<button class="outlined" id="add-filter">Add node</button><button class="filled" id="queue-filtergraph">Apply & queue</button>')}
     <div class="grid"><div class="card span7"><div class="list">${pickerCard('filters','Input')}${pickerCard('filters','Output',true)}</div><div class="graph" style="margin-top:14px">${state.filters.length ? state.filters.map((node,index) => `<button class="node${index === state.selectedFilter ? ' sel' : ''}" data-filter-index="${index}"><b>${esc(node.name)}</b><br><small>${esc(node.options || 'No options')}</small></button>`).join('<span class="ms">east</span>') : '<div class="empty-state">No filters. Add one to begin.</div>'}</div></div>
-    <div class="card span5"><h2>Selected node</h2>${state.filters[state.selectedFilter] ? `${field('Filter', select('filter-name',['scale','crop','fps','eq','curves','drawtext','overlay','loudnorm','atempo','unsharp'],state.filters[state.selectedFilter].name))}${field('Options', `<textarea id="filter-options" class="mono" rows="7">${esc(state.filters[state.selectedFilter].options)}</textarea>`)}<button class="tonal" id="update-filter">Update node</button><button class="outlined" id="remove-filter">Remove node</button>` : '<div class="empty-state">Select or add a node.</div>'}</div></div>`,
+    <div class="card span5"><h2>Selected node</h2>${state.filters[state.selectedFilter] ? `${field('Media stream',select('filter-kind',['video','audio'],state.filters[state.selectedFilter].kind || (['loudnorm','atempo'].includes(state.filters[state.selectedFilter].name) ? 'audio' : 'video')))}${field('Filter', select('filter-name',(state.filters[state.selectedFilter].kind || (['loudnorm','atempo'].includes(state.filters[state.selectedFilter].name) ? 'audio' : 'video')) === 'audio' ? ['loudnorm','atempo'] : ['scale','crop','fps','eq','curves','drawtext','unsharp'],state.filters[state.selectedFilter].name))}${field('Options', `<textarea id="filter-options" class="mono" rows="7">${esc(state.filters[state.selectedFilter].options)}</textarea>`)}<button class="tonal" id="update-filter">Update node</button><button class="outlined" id="remove-filter">Remove node</button>` : '<div class="empty-state">Select or add a node.</div>'}<p class="hint">Audio and video chains are compiled separately, then applied to the matching stream.</p></div></div>`,
 
-  audio: () => `${pageHead('Audio', 'Extraction & loudness', 'Inspect streams, normalize with loudnorm, or extract a selected stream.', '<button class="filled" id="queue-loudnorm">Queue two-pass normalize</button>')}
-    <div class="grid"><div class="card span6"><h2>Source</h2><div class="list">${pickerCard('audio','Input')}${pickerCard('audio','Output',true)}</div>
-      <div class="two-col" style="margin-top:14px">${field('Integrated loudness (LUFS)', input('audio-lufs',state.form.loudness,'number','min="-70" max="-5" step="0.1"'))}${field('Loudness range',input('audio-lra',state.form.lra,'number','min="1" max="50" step="0.1"'))}${field('True peak (dBTP)',input('audio-tp',state.form.truePeak,'number','min="-9" max="0" step="0.1"'))}</div></div>
-    <div class="card span6"><h2>Extract stream</h2>${field('Stream', select('audio-stream', state.audioStreams.length ? state.audioStreams.map((s) => s.id) : ['0:a:0'], state.form.audioStream))}${field('Output codec',select('audio-codec',['copy','flac','aac','libopus','pcm_s24le'],state.form.audioCodec))}<button class="filled" id="queue-extract">Queue extraction</button><p class="hint">Streams are populated from the selected file's real ffprobe result.</p></div></div>`,
+  audio: () => `${pageHead('Audio', 'Extraction & loudness', 'Inspect real streams, normalize with measured loudness, or extract one selected stream.', '')}
+    <div class="grid"><div class="card span6"><h2>Two-pass loudness</h2><div class="list">${pickerCard('audio','Input')}${pickerCard('audio-normalize','Normalized output',true)}</div>
+      <div class="two-col" style="margin-top:14px">${field('Integrated loudness (LUFS)', input('audio-lufs',state.form.loudness,'number','min="-70" max="-5" step="0.1"'))}${field('Loudness range',input('audio-lra',state.form.lra,'number','min="1" max="50" step="0.1"'))}${field('True peak (dBTP)',input('audio-tp',state.form.truePeak,'number','min="-9" max="0" step="0.1"'))}${field('Normalized output codec',select('loudnorm-codec',['flac','aac','libopus','pcm_s24le'],state.form.loudnormCodec))}</div><button class="filled" id="queue-loudnorm">Queue measured two-pass normalization</button></div>
+    <div class="card span6"><h2>Extract stream</h2><div class="list">${pickerCard('audio-extract','Extracted output',true)}</div>${field('Stream', select('audio-stream', state.audioStreams.length ? state.audioStreams.map((s) => s.id) : ['0:a:0'], state.form.audioStream))}${field('Output codec',select('audio-codec',['copy','flac','aac','libopus','pcm_s24le'],state.form.audioCodec))}<button class="filled" id="queue-extract">Queue extraction</button><p class="hint">Streams are populated from the selected file's real ffprobe result. Stream copy keeps the encoded bytes and does not apply filters.</p></div></div>`,
 
-  gif: () => `${pageHead('Stills & loops', 'GIF & thumbnails', 'Queue a palette-based GIF or timestamped thumbnail sequence.', '')}<div class="grid">
+  gif: () => `${pageHead('Stills & loops', 'GIF & thumbnails', 'Queue a palette-based GIF or one timestamped still.', '')}<div class="grid">
     <div class="card span6"><h2>GIF export</h2><div class="list">${pickerCard('gif','Input')}${pickerCard('gif','Output',true)}</div><div class="two-col">${field('FPS',input('gif-fps',state.form.gifFps,'number','min="1" max="60"'))}${field('Width',input('gif-width',state.form.gifWidth,'number','min="16" max="8192"'))}${field('Palette colors',input('gif-colors',state.form.gifColors,'number','min="2" max="256"'))}</div><button class="filled" id="queue-gif">Queue GIF</button></div>
-    <div class="card span6"><h2>Thumbnails</h2><div class="list">${pickerCard('thumbs','Input')}${pickerCard('thumbs','Output',true)}</div>${field('Interval in seconds',input('thumb-interval',state.form.thumbInterval,'number','min="0.1" max="86400" step="0.1"'))}<button class="filled" id="queue-thumbs">Queue thumbnails</button></div></div>`,
+    <div class="card span6"><h2>Thumbnail</h2><div class="list">${pickerCard('thumbs','Input')}${pickerCard('thumbs','JPEG output',true)}</div>${field('Timestamp',input('thumb-time',state.form.thumbTime,'text','placeholder="00:00:10.000"'))}<button class="filled" id="queue-thumbs">Queue thumbnail</button><p class="hint">This flow writes one validated still. It does not pretend a single save destination is a sequence folder.</p></div></div>`,
 
   presets: () => `${pageHead('Reusable settings', 'Presets', 'Saved locally from real configured operations.', '<button class="filled" id="new-preset">Save current convert settings</button>')}<div class="card"><div class="list">${state.presets.length ? state.presets.map((preset,index) => `<div class="list-item"><span class="ms">bookmarks</span><span style="flex:1"><b>${esc(preset.name)}</b><br><small class="mono">${esc(JSON.stringify(preset.values).slice(0,300))}</small></span><button class="tonal preset-use" data-index="${index}">Use</button><button class="outlined preset-edit" data-index="${index}">Rename</button><button class="preset-delete" data-index="${index}" style="color:var(--danger)">Delete</button></div>`).join('') : '<div class="empty-state"><b>No presets saved</b><br><small>Configure Convert, then save a named preset.</small></div>'}</div></div>`,
 
@@ -279,14 +437,14 @@ const VIEWS = {
     return `${pageHead('Runtime inventory', 'Hardware acceleration', 'Only methods reported by this bundled FFmpeg build are shown.', '<button class="tonal" id="refresh-runtime">Refresh</button>')}<div class="card"><div class="list">${methods.length ? methods.slice(0,200).map((item) => `<div class="list-item"><span class="ms">developer_board</span><b>${esc(typeof item === 'string' ? item : item.name)}</b><small>${esc(typeof item === 'object' ? item.details || item.description || '' : '')}</small></div>`).join('') : `<div class="empty-state"><b>${state.runtime.loading ? 'Loading hardware inventory…' : 'No hardware method reported'}</b><br><small>${esc(state.runtime.error || 'This is not inferred from the computer name or graphics vendor.')}</small></div>`}</div></div>`;
   },
 
-  streaming: () => `${pageHead('Live output', 'Streaming', 'Configure a real HLS path, RTMP URL, or SRT URL; nothing is preconnected.', '<button class="filled" id="queue-stream">Queue stream</button>')}<div class="grid"><div class="card span6"><div class="list">${pickerCard('streaming','Input')}</div>${field('Mode',select('stream-mode',['hls','rtmp','srt'],state.form.streamMode))}${field('Target path or URL',input('stream-target',state.form.streamTarget,'text','placeholder="Choose HLS output or enter a validated RTMP/SRT target"'))}<button class="outlined" id="stream-output">Choose HLS output</button></div>
+  streaming: () => `${pageHead('Live output', 'Streaming', 'Configure a real HLS playlist, RTMP URL, or SRT URL; nothing is preconnected.', '<button class="filled" id="queue-stream">Queue stream</button>')}<div class="grid"><div class="card span6"><div class="list">${pickerCard('streaming','Input')}${state.form.streamMode === 'hls' ? pickerCard('streaming','HLS playlist',true) : ''}</div>${field('Mode',select('stream-mode',['hls','rtmp','srt'],state.form.streamMode))}${state.form.streamMode === 'hls' ? '<p class="notice">Segments are written beside the selected playlist through the same trusted output handle.</p>' : field('Validated streaming URL',input('stream-target',state.form.streamTarget,'text','placeholder="rtmp://… or srt://… (credentials are not accepted)"'))}</div>
     <div class="card span6"><h2>HLS options</h2><div class="two-col">${field('Segment seconds',input('hls-time',state.form.hlsTime,'number','min="1" max="60"'))}${field('Playlist entries',input('hls-list',state.form.hlsList,'number','min="0" max="10000"'))}</div><div class="empty-state">No target is treated as live or connected until the queued FFmpeg process reports it.</div></div></div>`,
 
   jobs: () => {
     const selected = state.jobs.find((job) => job.id === state.selectedJobId) || state.jobs[0];
     const logs = selected?.logs || [];
-    return `${pageHead('Durable queue', 'Jobs & logs', 'Live process state, progress, exit status, and bounded logs.', '<button class="outlined" id="refresh-jobs">Refresh</button><button class="outlined" id="clear-finished">Clear finished</button>')}<div class="card bulk-bar"><b>${state.selectedJobs.size} selected</b><button id="jobs-select-all">Select all</button><button id="jobs-select-none">Clear</button><button id="jobs-pause">Pause</button><button id="jobs-resume">Resume</button><button id="jobs-back">Move to back</button><button id="jobs-cancel" style="color:var(--danger)">Cancel</button></div>
-      <div class="list">${jobRows(true)}</div><div class="card" style="margin-top:14px"><div class="section-head"><h2>${selected ? esc(selected.label) : 'Job log'}</h2><input id="log-search" placeholder="Filter log lines"></div><div class="log-pane" id="log-pane">${logs.length ? logs.map((line) => `<div>${esc(line)}</div>`).join('') : '<div>No log lines available.</div>'}</div></div>`;
+    return `${pageHead('Durable queue', 'Jobs & logs', 'Live process state, progress facts, exit status, output validation, and bounded logs.', '<button class="outlined" id="refresh-jobs">Refresh</button><button class="outlined" id="clear-finished">Clear finished</button>')}<div class="card bulk-bar"><b>${state.selectedJobs.size} selected</b><button id="jobs-select-all">Select all</button><button id="jobs-select-none">Clear</button><button id="jobs-pause">Pause</button><button id="jobs-resume">Resume</button><button id="jobs-back">Move to back</button><button id="jobs-cancel" style="color:var(--danger)">Cancel</button></div>
+      <div class="list">${jobRows(true)}</div><div class="card" style="margin-top:14px"><div class="section-head"><h2>${selected ? esc(selected.label) : 'Job log'}</h2><input id="log-search" placeholder="Filter log lines"></div>${selected?.error ? `<p class="notice" style="color:var(--danger)"><b>Failure:</b> ${esc(selected.error)}</p>` : ''}<div class="log-pane" id="log-pane">${logs.length ? logs.map((line) => `<div>${esc(line)}</div>`).join('') : '<div>No log lines available.</div>'}</div></div>`;
   },
 
   composer: () => `${pageHead('Structured argv', 'Command composer', 'One argument per line. The renderer never parses or executes a shell string.', '<button class="filled" id="queue-composer">Queue command</button>')}<div class="grid"><div class="card span5"><div class="list">${pickerCard('composer','Input')}${pickerCard('composer','Output',true)}</div><p class="hint">Blank lines are ignored. Executable names and shell operators are rejected by the builder.</p></div><div class="card span7">${field('Arguments',`<textarea id="composer-args" class="mono" rows="18">${esc(state.form.composerArgs)}</textarea>`)}<pre class="cmd-pre" id="composer-preview"></pre></div></div>`,
@@ -325,7 +483,7 @@ function render() {
   const version = state.runtime.loading ? 'Checking runtime…' : state.runtime.available ? `FFmpeg ${esc(state.runtime.version || 'ready')}` : 'FFmpeg unavailable';
   $('#subnav').innerHTML = `<p class="eyebrow">${esc(GROUPS[group].title)}</p><div style="display:grid;gap:3px">${GROUPS[group].items.map(([id,icon,label]) => `<button class="subnav-item${id === state.view ? ' active' : ''}" data-go="${id}"><span class="ms">${icon}</span><span>${esc(label)}</span></button>`).join('')}</div><div class="build-note"><b>${version}</b><br>${esc(state.runtime.error || 'Bundled runtime')}</div>`;
   $('#tabs').innerHTML = state.tabs.map((tab) => `<button class="tab${(tab.view || tab.id) === state.view ? ' active' : ''}" data-go="${esc(tab.view || tab.id)}" role="tab" data-tab-id="${esc(tab.id)}"><span class="ms">${esc(normalizeTabIcon(tab.icon))}</span><span>${esc(tab.label)}</span>${tab.pinned ? '<span class="ms">keep</span>' : ''}</button>`).join('') + '<button id="tab-add" title="Open current view as a tab">+</button><button id="tab-list"><span class="ms">menu</span></button><div class="palette-hint" id="palette-open-2">Search everything <b>Ctrl+Shift+F</b></div>';
-  $('#content').innerHTML = (VIEWS[state.view] || VIEWS.overview)(); $('#live-command').textContent = safePreview();
+  $('#content').innerHTML = (VIEWS[state.view] || VIEWS.overview)(); $('#live-command').textContent = livePreview();
   document.body.classList.toggle('light', state.theme === 'light');
   const logo = $('#logo-open'); logo.textContent = state.logo.image ? '' : state.logo.glyph || 'M'; logo.style.backgroundImage = state.logo.image ? `url(${state.logo.image})` : ''; logo.style.backgroundSize = 'cover'; logo.style.backgroundPosition = 'center';
   applyAppearance();
@@ -341,7 +499,7 @@ const updateForm = (id, key, numeric = false) => {
   element.addEventListener(element.type === 'text' || element.tagName === 'TEXTAREA' ? 'input' : 'change', handler);
 };
 function updatePreviews() {
-  const preview = $('#cmd-pre'); if (preview) preview.textContent = safePreview(); $('#live-command').textContent = safePreview();
+  const preview = $('#cmd-pre'); if (preview) preview.textContent = convertPreview(); $('#live-command').textContent = livePreview();
   const composer = $('#composer-preview'); if (composer) {
     try { composer.textContent = commandPreview(build('composer', composerValues())); }
     catch (error) { composer.textContent = error.message; }
@@ -351,42 +509,51 @@ function updatePreviews() {
 function composerValues() {
   const lines = state.form.composerArgs.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const options = [];
+  const optionName = /^-{1,2}[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}$/u;
   for (let index = 0; index < lines.length; index += 1) {
     const name = lines[index];
-    if (name === 'ffmpeg' || name === 'ffmpeg.exe' || /[|;&`]/.test(name)) throw new Error('Composer accepts FFmpeg option rows, not a shell command.');
-    if (!name.startsWith('-')) throw new Error(`Expected an option name, received: ${name}`);
+    if (/^ffmpeg(?:\.exe)?$/iu.test(name) || /[|;&`]/u.test(name)) throw new Error('Composer accepts FFmpeg option rows, not a shell command.');
+    if (!optionName.test(name)) throw new Error(`Expected a valid FFmpeg option name, received: ${name}`);
     const next = lines[index + 1];
-    options.push({ name, value: next && !next.startsWith('-') ? (index += 1, next) : true });
+    const nextIsOption = next && optionName.test(next) && !/^-\d+(?:\.\d+)?$/u.test(next);
+    options.push({ name, value: next && !nextIsOption ? (index += 1, next) : true });
   }
   return { inputs: [{ source: state.inputs.composer?.handle }], outputs: [{ target: state.outputs.composer?.handle, options }] };
 }
 
 async function queueLoudnormAnalysis() {
-  const values = { input: state.inputs.audio?.handle, phase: 'analysis', stream: state.form.audioStream, integrated: state.form.loudness, lra: state.form.lra, truePeak: state.form.truePeak };
   try {
+    if (!state.runtime.available) throw new Error(state.runtime.error || 'The bundled FFmpeg runtime is unavailable.');
+    const output = requireExtension(state.outputs['audio-normalize'], [outputOptions('audio-normalize').filters[0].extensions[0]], 'normalized audio output');
+    const values = { input: state.inputs.audio?.handle, phase: 'analysis', stream: state.form.audioStream, integrated: state.form.loudness, lra: state.form.lra, truePeak: state.form.truePeak };
     const argv = build('loudnorm', values), label = `Analyze loudness · ${state.inputs.audio?.name || 'audio'}`;
     const result = await apiCall('jobs.enqueue', { label, args: runtimeArgs(argv) });
     const analysis = Array.isArray(result)
       ? result.filter((job) => job.label === label).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0]
       : result && typeof result === 'object' ? result : null;
     if (!analysis?.id) throw new Error('The analysis job was queued without an identifier.');
-    state.loudnormPending[analysis.id] = { input: state.inputs.audio, output: state.outputs.audio, stream: state.form.audioStream, integrated: state.form.loudness, lra: state.form.lra, truePeak: state.form.truePeak, audioCodec: state.form.audioCodec };
+    state.loudnormPending[analysis.id] = { input: state.inputs.audio, output, stream: state.form.audioStream, integrated: state.form.loudness, lra: state.form.lra, truePeak: state.form.truePeak, audioCodec: state.form.loudnormCodec };
     notify('Two-pass normalization started','Pass 1 is measuring the selected stream.'); state.view='jobs'; await refreshJobs();
   } catch (error) { notify('Could not queue loudness analysis',error.message,'error'); }
 }
 
 function loudnormMeasurements(logs) {
-  const text = (logs || []).join('\n'), match = text.match(/\{[\s\S]*"input_i"[\s\S]*?\}/u); if (!match) throw new Error('Pass 1 completed without bounded loudnorm JSON measurements.');
-  const parsed = JSON.parse(match[0]);
-  return { inputI:Number(parsed.input_i), inputLra:Number(parsed.input_lra), inputTp:Number(parsed.input_tp), inputThresh:Number(parsed.input_thresh), targetOffset:Number(parsed.target_offset) };
+  const text = (logs || []).join('\n').slice(-200000), candidates = text.match(/\{[^{}]{1,8000}\}/gu) || [];
+  for (let index = candidates.length - 1; index >= 0; index -= 1) {
+    try {
+      const parsed = JSON.parse(candidates[index]);
+      const measurements = { inputI:Number(parsed.input_i), inputLra:Number(parsed.input_lra), inputTp:Number(parsed.input_tp), inputThresh:Number(parsed.input_thresh), targetOffset:Number(parsed.target_offset) };
+      if (Object.values(measurements).every(Number.isFinite)) return measurements;
+    } catch { }
+  }
+  throw new Error('Pass 1 completed without valid bounded loudnorm JSON measurements.');
 }
 
 async function completeLoudnorm(job) {
   const pending = state.loudnormPending[job.id]; if (!pending || job.status !== 'completed') return;
-  delete state.loudnormPending[job.id];
   try {
     const values = { input:pending.input.handle, output:pending.output?.handle, phase:'apply', stream:pending.stream, integrated:pending.integrated, lra:pending.lra, truePeak:pending.truePeak, measurements:loudnormMeasurements(job.logs), audioCodec:pending.audioCodec };
-    const argv = build('loudnorm',values); await apiCall('jobs.enqueue',{label:`Normalize · ${pending.output?.name || 'audio'}`,args:runtimeArgs(argv)}); notify('Pass 2 queued','Measured loudness values were applied to the output job.'); await refreshJobs();
+    const argv = build('loudnorm',values); await apiCall('jobs.enqueue',{label:`Normalize · ${pending.output?.name || 'audio'}`,args:runtimeArgs(argv)}); delete state.loudnormPending[job.id]; notify('Pass 2 queued','Measured loudness values were applied to the output job.'); await refreshJobs();
   } catch (error) { notify('Two-pass normalization stopped',error.message,'error'); }
 }
 
@@ -395,23 +562,24 @@ function wireView() {
   $$('[data-group]').forEach((button) => button.onclick = () => go(GROUPS[button.dataset.group].items[0][0]));
   $$('#palette-open,#palette-open-2').forEach((button) => button.onclick = openPalette);
   $$('.pick-input').forEach((button) => button.onclick = async () => { const files = await pickFile(button.dataset.slot, { multiple: false, purpose: button.dataset.slot }); if (files.length && ['audio','inspector'].includes(button.dataset.slot)) inspectSelected(button.dataset.slot); });
-  $$('.pick-output').forEach((button) => button.onclick = () => chooseOutput(button.dataset.slot, { purpose: button.dataset.slot }));
-  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-mode','trimMode'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['audio-codec','audioCodec'],['audio-stream','audioStream'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-colors','gifColors',true],['thumb-interval','thumbInterval',true],['stream-mode','streamMode'],['stream-target','streamTarget'],['hls-time','hlsTime',true],['hls-list','hlsList',true],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
+  $$('.pick-output').forEach((button) => button.onclick = () => chooseOutput(button.dataset.slot, Object.assign({ purpose: button.dataset.slot }, outputOptions(button.dataset.slot))));
+  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-mode','trimMode'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-codec','audioCodec'],['audio-stream','audioStream'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-colors','gifColors',true],['thumb-time','thumbTime'],['stream-target','streamTarget'],['hls-time','hlsTime',true],['hls-list','hlsList',true],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
+  const streamMode = $('#stream-mode'); if (streamMode) streamMode.onchange = () => { state.form.streamMode = streamMode.value; saveUi(); render(); };
   const trimNegative = $('#trim-negative'); if (trimNegative) trimNegative.onchange = () => { state.form.avoidNegative = trimNegative.checked; saveUi(); };
 
-  $('#queue-convert')?.addEventListener('click', () => enqueue('convert', convertValues(), state.outputs.convert?.name || 'Convert'));
-  $('#queue-trim')?.addEventListener('click', () => enqueue('trim', { input: state.inputs.trim?.handle, output: state.outputs.trim?.handle, start: state.form.trimStart, end: state.form.trimEnd || undefined, mode: state.form.trimMode, avoidNegativeTs: state.form.avoidNegative ? 'make_zero' : 'disabled' }, state.outputs.trim?.name || 'Trim'));
-  $('#queue-filtergraph')?.addEventListener('click', () => enqueue('filtergraph', { input: state.inputs.filters?.handle, output: state.outputs.filters?.handle, videoGraph: state.filters.map((node) => node.options ? `${node.name}=${node.options}` : node.name).join(','), videoCodec: 'libx264', audioCodec: 'aac', crf: state.form.crf, preset: state.form.preset }, state.outputs.filters?.name || 'Filtergraph'));
+  $('#queue-convert')?.addEventListener('click', () => enqueue('convert', convertValues, state.outputs.convert?.name || 'Convert'));
+  $('#queue-trim')?.addEventListener('click', () => enqueue('trim', trimValues, state.outputs.trim?.name || 'Trim'));
+  $('#queue-filtergraph')?.addEventListener('click', () => enqueue('filtergraph', filtergraphValues, state.outputs.filters?.name || 'Filtergraph'));
   $('#queue-loudnorm')?.addEventListener('click', queueLoudnormAnalysis);
-  $('#queue-extract')?.addEventListener('click', () => enqueue('extract', { input: state.inputs.audio?.handle, streams: [{ selector: state.form.audioStream, output: state.outputs.audio?.handle, codec: state.form.audioCodec }] }, state.outputs.audio?.name || 'Extract audio'));
-  $('#queue-gif')?.addEventListener('click', () => enqueue('gif', { input: state.inputs.gif?.handle, output: state.outputs.gif?.handle, fps: state.form.gifFps, width: state.form.gifWidth, maxColors: state.form.gifColors }, state.outputs.gif?.name || 'GIF'));
-  $('#queue-thumbs')?.addEventListener('click', () => enqueue('thumbnails', { input: state.inputs.thumbs?.handle, outputPattern: state.outputs.thumbs?.handle, mode: 'thumbnail', count: 1 }, state.outputs.thumbs?.name || 'Thumbnail'));
-  $('#queue-stream')?.addEventListener('click', () => enqueue(state.form.streamMode === 'hls' ? 'hls' : 'stream', state.form.streamMode === 'hls' ? { input: state.inputs.streaming?.handle, output: state.outputs.streaming?.handle || state.form.streamTarget, hlsTime: state.form.hlsTime, listSize: state.form.hlsList, videoCodec: 'libx264', audioCodec: 'aac' } : { input: state.inputs.streaming?.handle, target: state.form.streamTarget, format: state.form.streamMode === 'rtmp' ? 'flv' : 'mpegts', videoCodec: 'libx264', audioCodec: 'aac', realtime: true }, `${state.form.streamMode.toUpperCase()} output`));
-  $('#stream-output')?.addEventListener('click', () => chooseOutput('streaming', { purpose: 'streaming', directory: state.form.streamMode === 'hls' }));
+  $('#queue-extract')?.addEventListener('click', () => enqueue('extract', extractValues, state.outputs['audio-extract']?.name || 'Extract audio'));
+  $('#queue-gif')?.addEventListener('click', () => enqueue('gif', gifValues, state.outputs.gif?.name || 'GIF'));
+  $('#queue-thumbs')?.addEventListener('click', () => enqueue('thumbnails', thumbnailValues, state.outputs.thumbs?.name || 'Thumbnail'));
+  $('#queue-stream')?.addEventListener('click', () => enqueue(state.form.streamMode === 'hls' ? 'hls' : 'stream', streamingValues, `${state.form.streamMode.toUpperCase()} output`));
 
-  $('#add-filter')?.addEventListener('click', () => { state.filters.push({ name: 'scale', options: '1920:-2' }); state.selectedFilter = state.filters.length - 1; render(); });
+  $('#add-filter')?.addEventListener('click', () => { state.filters.push({ kind: 'video', name: 'scale', options: '1920:-2' }); state.selectedFilter = state.filters.length - 1; render(); });
   $$('[data-filter-index]').forEach((button) => button.onclick = () => { state.selectedFilter = Number(button.dataset.filterIndex); render(); });
-  $('#update-filter')?.addEventListener('click', () => { const node = state.filters[state.selectedFilter]; if (!node) return; node.name = bounded($('#filter-name').value, 80); node.options = bounded($('#filter-options').value, 2000); render(); });
+  const filterKind = $('#filter-kind'); if (filterKind) filterKind.onchange = () => { const node = state.filters[state.selectedFilter]; if (!node) return; node.kind = filterKind.value; node.name = node.kind === 'audio' ? 'loudnorm' : 'scale'; node.options = node.kind === 'audio' ? 'I=-16:LRA=11:TP=-1.5' : '1920:-2'; render(); };
+  $('#update-filter')?.addEventListener('click', () => { const node = state.filters[state.selectedFilter]; if (!node) return; node.kind = bounded($('#filter-kind').value, 20); node.name = bounded($('#filter-name').value, 80); node.options = bounded($('#filter-options').value, 2000); render(); });
   $('#remove-filter')?.addEventListener('click', () => { state.filters.splice(state.selectedFilter,1); state.selectedFilter = clamp(state.selectedFilter,0,Math.max(0,state.filters.length-1)); render(); });
 
   $('#save-convert-preset')?.addEventListener('click', savePreset); $('#new-preset')?.addEventListener('click', savePreset);
@@ -434,11 +602,11 @@ function wireView() {
   $('#jobs-back')?.addEventListener('click', moveSelectedToBack); $('#clear-finished')?.addEventListener('click', clearFinished); $('#log-search')?.addEventListener('input', filterLogs);
 
   const composer = $('#composer-args'); if (composer) { composer.oninput = () => { state.form.composerArgs = composer.value.slice(0,20000); saveUi(); updatePreviews(); }; updatePreviews(); }
-  $('#queue-composer')?.addEventListener('click', () => enqueue('composer', composerValues(), state.outputs.composer?.name || 'Composed command'));
+  $('#queue-composer')?.addEventListener('click', () => enqueue('composer', composerValues, state.outputs.composer?.name || 'Composed command'));
   $('#converter-add')?.addEventListener('click', addConverterFiles); $('#queue-converter')?.addEventListener('click', queueConverterFiles);
   $$('.converter-remove').forEach((button) => button.onclick = () => { state.converterFiles.splice(Number(button.dataset.index),1); render(); });
 
-  $('#copy-current-command')?.addEventListener('click', () => navigator.clipboard.writeText(safePreview()).then(() => notify('Copied','Command preview copied.')).catch((error) => notify('Copy failed',error.message,'error')));
+  $('#copy-current-command')?.addEventListener('click', () => navigator.clipboard.writeText(convertPreview()).then(() => notify('Copied','Command preview copied.')).catch((error) => notify('Copy failed',error.message,'error')));
   $('#theme-dark')?.addEventListener('click', () => { state.theme = 'dark'; render(); }); $('#theme-light')?.addEventListener('click', () => { state.theme = 'light'; render(); }); $('#logo-settings')?.addEventListener('click', openLogo);
   bindFunnyLevelControl('#setting-funny-en', '#setting-funny-en-output', '#setting-funny-en-preview', 'english');
   bindFunnyLevelControl('#setting-funny-yue', '#setting-funny-yue-output', '#setting-funny-yue-preview', 'cantonese');
@@ -528,6 +696,7 @@ async function addConverterFiles() {
 }
 async function queueConverterFiles() {
   const files = state.converterFiles.filter((file) => file.supported); if (!files.length) return notify('No supported files','Add at least one media file that the runtime can inspect.','error');
+  if (!state.runtime.available) return notify('Bundled runtime unavailable',state.runtime.error || 'The bundled FFmpeg runtime is unavailable.','error');
   const adapters = { mp4:'video/mp4-h264-aac',mkv:'video/mkv-copy',webm:'video/webm-vp9-opus',mp3:'audio/mp3',flac:'audio/flac',wav:'audio/wav-pcm-s24le',png:'image/png',jpg:'image/jpeg' };
   const adapter = adapters[state.form.converterTarget]; if (!adapter) return notify('Target unavailable',`No bundled adapter is available for ${state.form.converterTarget}.`,'error');
   let queued = 0;
@@ -620,7 +789,10 @@ function filterJobEvent(payload) {
   else if (payload.type === 'cleared' && Array.isArray(payload.ids)) { const cleared=new Set(payload.ids.map(String)); state.jobs=state.jobs.filter((job)=>!cleared.has(job.id)); state.selectedJobs=new Set([...state.selectedJobs].filter((id)=>!cleared.has(id))); if(cleared.has(state.selectedJobId))state.selectedJobId=''; }
   else return;
   const raw=payload.job;
-  if(state.settings.notifyComplete&&raw&&['completed','failed','cancelled','interrupted'].includes(raw.status)) notify('Job updated',`${raw.label||'Job'}: ${raw.status}`,raw.status==='failed'?'error':'info');
+  if(state.settings.notifyComplete&&raw&&['completed','failed','cancelled','interrupted'].includes(raw.status)) {
+    const failure = raw.error || (Number.isInteger(raw.exitCode) ? `exit ${raw.exitCode}` : 'no additional failure detail was reported');
+    notify('Job updated',`${raw.label||'Job'}: ${raw.status}${raw.status === 'failed' ? ` · ${failure}` : ''}`,raw.status==='failed'?'error':'info');
+  }
   render();
 }
 

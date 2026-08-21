@@ -1221,6 +1221,13 @@
   ]);
   const CHANGELOG = Object.freeze([
     {
+      version: 'Guided audio extraction',
+      date: '2026-08-21',
+      category: 'Audio',
+      text: 'Connected inspected audio streams, bounded format options, native output selection, and trusted queue submission.',
+      sha: '949d0f7506745dffabae5bb7648929a091a4b146',
+    },
+    {
       version: 'Unsigned packaging verification',
       date: '2026-08-21',
       category: 'Packaging',

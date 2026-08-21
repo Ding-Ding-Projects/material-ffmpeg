@@ -131,8 +131,8 @@ $ffmpeg = Get-ChildItem -LiteralPath $staging -Filter 'ffmpeg.exe' -Recurse -Fil
 $ffprobe = Get-ChildItem -LiteralPath $staging -Filter 'ffprobe.exe' -Recurse -File | Select-Object -First 1
 if ($null -eq $ffmpeg -or $null -eq $ffprobe) { throw 'The archive did not contain both ffmpeg.exe and ffprobe.exe.' }
 
-if (Test-Path -LiteralPath $targetRoot) { Remove-Item -LiteralPath $targetRoot -Recurse -Force }
 Ensure-Directory $targetRoot
+Get-ChildItem -LiteralPath $targetRoot -Force | Where-Object { $_.Name -ne 'README.md' } | Remove-Item -Recurse -Force
 Copy-Item -LiteralPath $ffmpeg.FullName -Destination (Join-Path $targetRoot 'ffmpeg.exe')
 Copy-Item -LiteralPath $ffprobe.FullName -Destination (Join-Path $targetRoot 'ffprobe.exe')
 Get-ChildItem -LiteralPath $staging -Recurse -File | Where-Object { $_.Name -match '^(LICENSE|README|build-info)' } | ForEach-Object {

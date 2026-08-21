@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:">
+<title>material-ffmpeg</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;600&family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,300..600,0..1,0" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="titlebar">
+    <button class="brand-mark" id="logo-open" title="Customize app logo">M</button>
+    <div class="title">material-ffmpeg <span>FFmpeg control plane · 8.0</span></div>
+    <div class="title-actions">
+      <button id="theme-toggle" title="Toggle light / dark"><span class="ms" style="font-size:20px">light_mode</span></button>
+      <button id="notification-open" title="Notification centre" style="color:var(--accent)"><span class="ms" style="font-size:20px">notifications</span></button>
+      <button data-window="minimize" aria-label="Minimize">−</button>
+      <button data-window="maximize" aria-label="Maximize" style="font-size:15px">□</button>
+      <button data-window="close" class="close" aria-label="Close">×</button>
+    </div>
+  </header>
+  <div class="workspace-tabs" role="tablist" id="tabs"></div>
+  <div class="app-shell">
+    <nav class="rail" id="rail" aria-label="Primary"></nav>
+    <nav class="subnav" id="subnav" aria-label="Section"></nav>
+    <main class="main"><div id="content" class="page" tabindex="-1"></div></main>
+  </div>
+  <div class="composer-bar">
+    <span class="ms">terminal</span>
+    <code id="live-command"></code>
+    <button class="tonal" style="padding:5px 13px;font-size:11.5px" id="copy-command">Copy</button>
+    <button id="open-composer" title="Open composer" style="color:var(--muted)"><span class="ms">open_in_full</span></button>
+  </div>
+  <div class="toast-zone" id="toast-zone"></div>
+
+  <dialog id="command-dialog"><form method="dialog" class="overlay-form">
+    <div class="dialog-head"><div><p class="eyebrow">Keyboard route · Ctrl+Shift+F</p><h2>Command palette</h2></div><button value="cancel" class="icon-button">×</button></div>
+    <div class="search-line" style="margin-bottom:10px"><input id="command-search" placeholder="Search commands, settings, views…" autocomplete="off" style="width:100%;border-radius:12px"><button type="button" class="builder-button" data-builder="command-search">.*</button></div>
+    <div id="command-list" class="command-list"></div>
+  </form></dialog>
+
+  <dialog id="regex-dialog"><form method="dialog" class="overlay-form" style="width:min(560px,calc(100vw - 40px))">
+    <div class="dialog-head"><div><p class="eyebrow">Search tool</p><h2>Regex builder</h2></div><button value="cancel" class="icon-button">×</button></div>
+    <label class="field">Pattern<input id="regex-pattern" maxlength="500" spellcheck="false" value="(nvenc|qsv)$" class="mono"></label>
+    <p class="field" style="margin:12px 0 6px">Advanced builder — click to append a token</p>
+    <div id="regex-tokens" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+    <p class="field" style="margin:12px 0 6px">Common recipes</p>
+    <div id="regex-recipes" style="display:flex;gap:5px;flex-wrap:wrap"></div>
+    <div style="display:grid;grid-template-columns:auto 1fr;gap:10px;margin-top:12px;align-items:end">
+      <div class="field"><span>Flags</span><div id="regex-flag-btns" style="display:flex;gap:5px"></div></div>
+      <label class="field">Sample text<input id="regex-sample" maxlength="500" value="h264_nvenc hevc_qsv libx264"></label>
+    </div>
+    <input id="regex-flags" type="hidden" value="iu">
+    <div class="feedback"><b style="color:var(--text)">Explanation:</b> <span id="regex-explain">literal text match.</span></div>
+    <div class="preview" id="regex-preview"></div>
+    <div class="dialog-actions"><button value="cancel" class="tonal">Cancel</button><button value="default" class="filled">Apply pattern</button></div>
+  </form></dialog>
+
+  <dialog id="confirm-dialog"><form method="dialog" class="overlay-form" style="width:min(520px,calc(100vw - 40px))">
+    <div class="dialog-head"><div><p class="eyebrow">Safety gate</p><h2 id="confirm-title">Clear the job queue?</h2></div><button value="cancel" class="icon-button">×</button></div>
+    <p id="confirm-copy" style="margin:0 0 14px;color:var(--muted);font-size:13px">This cancels running jobs and removes queued jobs. Press both keys, then move the slider to the end to authorize.</p>
+    <div class="key-row"><button type="button" data-key="a">Press A</button><button type="button" data-key="l">Press L</button></div>
+    <input id="confirm-slider" type="range" min="0" max="100" value="0" disabled>
+    <div class="progress-track"><span id="confirm-progress" style="width:0"></span></div>
+    <div class="dialog-actions"><button value="cancel" class="tonal">Emergency exit</button><button id="confirm-go" value="default" class="filled" disabled>Authorize</button></div>
+  </form></dialog>
+
+  <dialog id="appearance-dialog"><form method="dialog" class="overlay-form" style="width:min(560px,calc(100vw - 40px))">
+    <div class="dialog-head"><div><p class="eyebrow">Element appearance</p><h2>Edit appearance</h2></div><button value="cancel" class="icon-button">×</button></div>
+    <p id="appearance-target" style="margin:0 0 14px;color:var(--muted);font-size:12.5px"></p>
+    <div class="two-col">
+      <label class="field">Theme<select id="appearance-theme"><option value="dark">Dark</option><option value="light">Light</option></select></label>
+      <label class="field">Accent color<input id="appearance-accent" type="color" value="#82d5cc" style="height:41px;padding:4px"></label>
+      <label class="field">Font family<select id="appearance-font"><option>Google Sans</option><option>Roboto</option><option>Roboto Mono</option></select></label>
+      <label class="field">Corner radius <input id="appearance-radius" type="range" min="8" max="32" value="16"></label>
+      <label class="field">Font scale <input id="appearance-scale" type="range" min="0.9" max="1.3" step="0.05" value="1"></label>
+      <label class="field">Font weight <input id="appearance-weight" type="range" min="300" max="700" step="100" value="400"></label>
+    </div>
+    <div class="dialog-actions"><button type="button" class="outlined" id="appearance-reset">Reset element</button><button value="cancel" class="tonal">Cancel</button><button value="default" class="filled" id="appearance-apply">Apply appearance</button></div>
+  </form></dialog>
+
+  <dialog id="logo-dialog"><form method="dialog" class="overlay-form" style="width:min(560px,calc(100vw - 40px))">
+    <div class="dialog-head"><div><p class="eyebrow">Presentation only — never changes executable identity</p><h2>App logo</h2></div><button value="cancel" class="icon-button">×</button></div>
+    <p class="field" style="margin-bottom:10px">Shipped presets</p>
+    <div id="logo-presets" style="display:flex;gap:8px;margin-bottom:16px"></div>
+    <label class="upload-slot" style="margin-bottom:14px"><span class="ms" style="font-size:18px">upload_file</span>Upload private local image (PNG/SVG ≤ 1 MB)<input type="file" id="logo-upload" accept="image/png,image/svg+xml" hidden></label>
+    <div class="two-col">
+      <label class="field">Fit<select><option selected>Contain</option><option>Cover</option><option>Pad</option></select></label>
+      <label class="field">Background<select><option selected>Accent</option><option>Transparent</option><option>Surface</option></select></label>
+    </div>
+    <p style="margin:12px 0 0;color:var(--muted);font-size:11.5px">Converted locally into 16/32/48/256 px display sizes. <a href="#" id="logo-reset">Reset to default</a></p>
+    <div class="dialog-actions"><button value="cancel" class="tonal">Cancel</button><button value="default" class="filled">Apply logo</button></div>
+  </form></dialog>
+
+  <dialog id="notification-dialog"><form method="dialog" class="overlay-form" style="width:min(560px,calc(100vw - 40px))">
+    <div class="dialog-head"><div><p class="eyebrow">Reviewable local notices</p><h2>Notification centre</h2></div><button value="cancel" class="icon-button">×</button></div>
+    <div class="search-line" style="margin-bottom:12px"><input id="notification-search" placeholder="Search notifications" style="width:100%;border-radius:12px"><button type="button" class="builder-button" data-builder="notification-search">.*</button></div>
+    <div id="notification-list" class="list" style="max-height:300px;overflow:auto"></div>
+    <div class="dialog-actions"><button type="button" class="outlined" id="notification-clear">Clear history</button><button value="cancel" class="tonal">Close</button></div>
+  </form></dialog>
+
+  <dialog id="tab-dialog"><form method="dialog" class="overlay-form" style="width:min(760px,calc(100vw - 40px));max-height:calc(100vh - 60px);overflow:auto">
+    <div class="dialog-head"><div><p class="eyebrow">Workspace navigation</p><h2>Tabs, groups, and safe closing</h2></div><button value="cancel" class="icon-button">×</button></div>
+    <div class="two-col" style="margin-bottom:14px">
+      <label class="field">Current strip search<div class="search-line"><input id="tab-current-search" placeholder="Search this strip" style="width:100%;border-radius:11px"><button type="button" class="builder-button" data-builder="tab-current-search">.*</button></div></label>
+      <label class="field">Master tab search<div class="search-line"><input id="tab-master-search" placeholder="Search every tab" style="width:100%;border-radius:11px"><button type="button" class="builder-button" data-builder="tab-master-search">.*</button></div></label>
+    </div>
+    <div id="tab-manager-list" class="list" style="margin-bottom:14px"></div>
+    <div style="border-top:1px solid var(--line);padding-top:12px">
+      <div class="two-col">
+        <label class="field">Close tabs containing text<div class="search-line"><input id="tab-close-containing" placeholder="Visible label text" style="width:100%;border-radius:11px"><button type="button" class="builder-button" data-builder="tab-close-containing">.*</button></div></label>
+        <label class="field">Close tabs not containing text<div class="search-line"><input id="tab-close-not-containing" placeholder="Visible label text" style="width:100%;border-radius:11px"><button type="button" class="builder-button" data-builder="tab-close-not-containing">.*</button></div></label>
+      </div>
+      <div id="tab-close-preview" class="feedback">Enter one close query, then preview the exact visible-label match set.</div>
+      <div class="dialog-actions"><button type="button" class="tonal" id="preview-tab-close">Preview close set</button><button type="button" class="filled" id="apply-tab-close" disabled>Authorize previewed close</button></div>
+    </div>
+  </form></dialog>
+
+  <div id="ctx-menu" class="ctx-menu" hidden role="menu"></div>
+  <script src="renderer.js"></script>
+  <script src="option-guides.js"></script>
+</body>
+</html>

@@ -1,0 +1,26 @@
+{
+  "name": "material-ffmpeg",
+  "productName": "material-ffmpeg",
+  "version": "0.1.0",
+  "description": "Local Material 3 Electron control plane for FFmpeg — every codec, filter, muxer, protocol, and flag as a typed UI.",
+  "main": "src/main.js",
+  "author": "Ding-Ding-Projects",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --test tests/",
+    "dist": "electron-builder --win squirrel"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^26.0.0",
+    "electron-builder-squirrel-windows": "26.15.3"
+  },
+  "build": {
+    "appId": "dev.dingding.material-ffmpeg",
+    "productName": "material-ffmpeg",
+    "forceCodeSigning": false,
+    "win": { "target": "squirrel", "signAndEditExecutable": false },
+    "squirrelWindows": { "artifactName": "material-ffmpeg-setup-${version}.exe" }
+  }
+}

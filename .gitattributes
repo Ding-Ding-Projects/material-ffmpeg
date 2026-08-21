@@ -1,0 +1,3 @@
+# Preserve the supplied design archive exactly as extracted.
+design/source/** -text
+

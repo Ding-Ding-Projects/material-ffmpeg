@@ -13,6 +13,10 @@
 
 This speed pass intentionally did not run tests, lint, reviews, accessibility checks, screenshots, a package build, or installer execution. The scripts and workflow contain file, version, checksum, package-content, commit, and unsigned-state assertions; those assertions become evidence only when the corresponding build completes successfully.
 
+## Latest release attempt
+
+GitHub Actions run `32456646436` (commit `b4a69531e66549b8fff7d0a2b7249611deb157e7`, 2026-08-21) built and collected the unsigned release assets, then failed in `Write measured release notes` with `Error formatting a string: Format specifier was invalid.` The release-publication, release-verification, and Pages jobs were skipped, so no release or published installer was produced by this run.
+
 ## Expected release assets
 
 - `material-ffmpeg-setup-<version>.exe`

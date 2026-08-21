@@ -13,10 +13,11 @@ if (-not $env:GITHUB_REPOSITORY -or -not $env:GITHUB_RUN_ID -or -not $env:GITHUB
 $runJson = & gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
 if ($LASTEXITCODE -ne 0) { throw 'Unable to read the current GitHub Actions run timing.' }
 $run = $runJson | ConvertFrom-Json
-$started = [DateTimeOffset]::Parse($run.run_started_at).ToUniversalTime()
+$started = ([DateTimeOffset]$run.run_started_at).ToUniversalTime()
 $completed = [DateTimeOffset]::UtcNow
 $duration = $completed - $started
-$durationText = '{0:D2}:{1:D2}:{2:D2}' -f [math]::Floor($duration.TotalHours), $duration.Minutes, $duration.Seconds
+$durationHours = [int64][math]::Floor($duration.TotalHours)
+$durationText = '{0:D2}:{1:D2}:{2:D2}' -f $durationHours, $duration.Minutes, $duration.Seconds
 $lineCounts = Get-Content -LiteralPath $LineCountPath -Raw
 $version = (Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) 'package.json') -Raw | ConvertFrom-Json).version
 $notes = @"

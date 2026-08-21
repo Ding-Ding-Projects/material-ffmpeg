@@ -6,6 +6,12 @@ const $$ = (selector, root = document) => Array.from(root.querySelectorAll(selec
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const bounded = (value, max = 500) => String(value ?? '').slice(0, max);
 const clamp = (value, min, max) => Math.min(max, Math.max(min, Number(value) || 0));
+const displayPrivacy = window.DisplayPrivacy;
+if (!displayPrivacy || typeof displayPrivacy.displayText !== 'function' || typeof displayPrivacy.displayValue !== 'function') {
+  throw new Error('The renderer display-privacy boundary is unavailable.');
+}
+const displayText = (value, role = 'local file') => displayPrivacy.displayText(value, role);
+const displayValue = (value, role = 'local file') => displayPrivacy.displayValue(value, role);
 const HANDLE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const DERIVED_OUTPUT_MARKER = '__DERIVED_OUTPUT__';
 const store = {
@@ -164,7 +170,7 @@ async function chooseOutput(slot, options = {}) {
 }
 
 const quotePreview = (arg) => /[\s"']/u.test(arg) ? `"${String(arg).replace(/["\\]/g, '\\$&')}"` : String(arg);
-const commandPreview = (argv) => ['ffmpeg', ...(Array.isArray(argv) ? argv : [])].map(quotePreview).join(' ');
+const commandPreview = (argv) => ['ffmpeg', ...(Array.isArray(argv) ? argv : [])].map((arg) => quotePreview(displayText(arg, 'selected file'))).join(' ');
 const derivedOutput = (file, suffix) => {
   if (!file || file.kind !== 'output' || !HANDLE_RE.test(file.handle)) throw new Error('Choose a valid output destination first.');
   if (typeof suffix !== 'string' || !/^[A-Za-z0-9._%()=-]{1,180}$/u.test(suffix)) throw new Error('Derived output suffix is invalid.');
@@ -301,7 +307,7 @@ const streamingValues = () => state.form.streamMode === 'hls'
     };
 const workflowPreview = (kind, values) => {
   try { return commandPreview(previewArgs(build(kind, typeof values === 'function' ? values() : values))); }
-  catch (error) { return bounded(error.message, 1000); }
+  catch (error) { return bounded(displayText(error.message, 'command detail'), 1000); }
 };
 const convertPreview = () => workflowPreview('convert', convertValues);
 const currentWorkflow = () => {
@@ -363,7 +369,7 @@ async function refreshJobs() {
 const jobRows = (selectable = false) => state.jobs.length ? state.jobs.map((job) => `<div class="list-item job-row" data-job-id="${esc(job.id)}">
   ${selectable ? `<input class="job-select" type="checkbox" data-job-id="${esc(job.id)}"${state.selectedJobs.has(job.id) ? ' checked' : ''}>` : ''}
   <span class="ms">${job.status === 'completed' ? 'check_circle' : job.status === 'failed' ? 'error' : 'movie'}</span>
-  <span style="flex:1;min-width:0"><b>${esc(job.label)}</b><br><small class="mono">${esc(job.argv.length ? commandPreview(job.argv) : job.progressText || job.kind)}</small>${job.error ? `<br><small style="color:var(--danger)">${esc(job.error)}</small>` : ''}</span>
+  <span style="flex:1;min-width:0"><b>${esc(displayText(job.label, 'job'))}</b><br><small class="mono">${esc(job.argv.length ? commandPreview(job.argv) : displayText(job.progressText || job.kind, 'job detail'))}</small>${job.error ? `<br><small style="color:var(--danger)">${esc(displayText(job.error, 'job error'))}</small>` : ''}</span>
   <span class="tag${['completed', 'cancelled', 'failed'].includes(job.status) ? ' idle' : ''}">${esc(job.status.toUpperCase())}</span>
   <b class="mono" style="font-size:11px;color:var(--muted)">${esc(job.speed || (job.exitCode != null ? `exit ${job.exitCode}` : ''))}</b>
   <button class="job-focus" data-job-id="${esc(job.id)}" title="Open job log"><span class="ms">receipt_long</span></button>
@@ -373,7 +379,7 @@ const field = (label, control) => `<label class="field"><span>${esc(label)}</spa
 const input = (id, value, type = 'text', extra = '') => `<input id="${id}" type="${type}" value="${esc(value)}" ${extra}>`;
 const select = (id, values, selected) => `<select id="${id}">${values.map((value) => `<option value="${esc(value)}"${String(value) === String(selected) ? ' selected' : ''}>${esc(value)}</option>`).join('')}</select>`;
 const pageHead = (eyebrow, title, description, actions = '') => `<div class="page-head"><div><p class="eyebrow">${esc(eyebrow)}</p><h1>${esc(title)}</h1><p class="lede">${esc(description)}</p></div><div class="head-actions">${actions}</div></div>`;
-const displayFile = (file, empty) => file ? esc(file.name) : `<span class="hint">${esc(empty)}</span>`;
+const displayFile = (file, empty) => file ? esc(displayText(file.name, file.kind === 'output' ? 'output file' : 'input file')) : `<span class="hint">${esc(empty)}</span>`;
 const pickerCard = (slot, label, output = false) => `<div class="list-item"><span class="ms">${output ? 'output' : 'movie'}</span><span style="flex:1;min-width:0"><b>${esc(label)}</b><br><small class="mono">${displayFile(output ? state.outputs[slot] : state.inputs[slot], output ? 'Choose an output destination' : 'Choose an input file')}</small></span><button class="tonal ${output ? 'pick-output' : 'pick-input'}" data-slot="${slot}">${output ? 'Choose' : 'Browse'}</button></div>`;
 
 const runtimeCard = () => {
@@ -393,7 +399,7 @@ const runtimeCard = () => {
     ['ffprobe build', runtime.ffprobeVersionFull],
     ['Configuration', runtime.configuration]
   ].filter(([, fact]) => fact);
-  return `<div class="card span3 runtime-card"><small>Runtime</small><div class="stat runtime-stat">${esc(value)}</div><small>${esc(runtime.error || 'Bundled FFmpeg status')}</small>
+  return `<div class="card span3 runtime-card"><small>Runtime</small><div class="stat runtime-stat">${esc(value)}</div><small>${esc(displayText(runtime.error || 'Bundled FFmpeg status', 'runtime detail'))}</small>
     <details class="runtime-meta"><summary>Runtime details</summary>${rows.map(([label, fact]) => `<div class="runtime-meta-row"><span class="runtime-meta-label">${esc(label)}</span><span class="runtime-meta-value">${esc(fact)}</span></div>`).join('')}
     ${fullFacts.map(([label, fact]) => `<div class="runtime-meta-row"><span class="runtime-meta-label">${esc(label)}</span><code class="runtime-meta-value${label === 'Configuration' ? ' runtime-configuration' : ''}">${esc(fact)}</code></div>`).join('')}</details></div>`;
 };
@@ -455,12 +461,12 @@ const VIEWS = {
 
   presets: () => `${pageHead('Reusable settings', 'Presets', 'Saved locally from real configured operations.', '<button class="filled" id="new-preset">Save current convert settings</button>')}<div class="card"><div class="list">${state.presets.length ? state.presets.map((preset,index) => `<div class="list-item"><span class="ms">bookmarks</span><span style="flex:1"><b>${esc(preset.name)}</b><br><small class="mono">${esc(JSON.stringify(preset.values).slice(0,300))}</small></span><button class="tonal preset-use" data-index="${index}">Use</button><button class="outlined preset-edit" data-index="${index}">Rename</button><button class="preset-delete" data-index="${index}" style="color:var(--danger)">Delete</button></div>`).join('') : '<div class="empty-state"><b>No presets saved</b><br><small>Configure Convert, then save a named preset.</small></div>'}</div></div>`,
 
-  inspector: () => `${pageHead('ffprobe', 'Media inspector', 'Inspect a real file and export the exact bounded result.', '<button class="outlined" id="inspect-pick">Choose file</button><button class="filled" id="inspect-run">Inspect</button>')}<div class="grid"><div class="card span4"><h2>Source</h2>${state.inputs.inspector ? `<b>${esc(state.inputs.inspector.name)}</b>` : '<div class="empty-state">No file selected.</div>'}${state.probeError ? `<div class="notice" style="color:var(--danger)">${esc(state.probeError)}</div>` : ''}<div class="dialog-actions"><button class="tonal probe-export" data-format="json">JSON</button><button class="tonal probe-export" data-format="csv">CSV</button><button class="tonal probe-export" data-format="xml">XML</button></div></div>
-    <div class="card span8"><h2>Probe result</h2><pre class="cmd-pre" id="probe-result">${state.probe ? esc(JSON.stringify(state.probe,null,2).slice(0,200000)) : 'Nothing inspected yet.'}</pre></div></div>`,
+  inspector: () => `${pageHead('ffprobe', 'Media inspector', 'Inspect a real file and export the exact bounded result.', '<button class="outlined" id="inspect-pick">Choose file</button><button class="filled" id="inspect-run">Inspect</button>')}<div class="grid"><div class="card span4"><h2>Source</h2>${state.inputs.inspector ? `<b>${esc(displayText(state.inputs.inspector.name, 'input file'))}</b>` : '<div class="empty-state">No file selected.</div>'}${state.probeError ? `<div class="notice" style="color:var(--danger)">${esc(displayText(state.probeError, 'inspection error'))}</div>` : ''}<div class="dialog-actions"><button class="tonal probe-export" data-format="json">JSON</button><button class="tonal probe-export" data-format="csv">CSV</button><button class="tonal probe-export" data-format="xml">XML</button></div></div>
+    <div class="card span8"><h2>Probe result</h2><pre class="cmd-pre" id="probe-result">${state.probe ? esc(JSON.stringify(displayValue(state.probe, 'inspected file'),null,2).slice(0,200000)) : 'Nothing inspected yet.'}</pre></div></div>`,
 
   hwaccel: () => {
     const methods = state.catalogs.hwaccels || [];
-    return `${pageHead('Runtime inventory', 'Hardware acceleration', 'Only methods reported by this bundled FFmpeg build are shown.', '<button class="tonal" id="refresh-runtime">Refresh</button>')}<div class="card"><div class="list">${methods.length ? methods.slice(0,200).map((item) => `<div class="list-item"><span class="ms">developer_board</span><b>${esc(typeof item === 'string' ? item : item.name)}</b><small>${esc(typeof item === 'object' ? item.details || item.description || '' : '')}</small></div>`).join('') : `<div class="empty-state"><b>${state.runtime.loading ? 'Loading hardware inventory…' : 'No hardware method reported'}</b><br><small>${esc(state.runtime.error || 'This is not inferred from the computer name or graphics vendor.')}</small></div>`}</div></div>`;
+    return `${pageHead('Runtime inventory', 'Hardware acceleration', 'Only methods reported by this bundled FFmpeg build are shown.', '<button class="tonal" id="refresh-runtime">Refresh</button>')}<div class="card"><div class="list">${methods.length ? methods.slice(0,200).map((item) => `<div class="list-item"><span class="ms">developer_board</span><b>${esc(typeof item === 'string' ? item : item.name)}</b><small>${esc(displayText(typeof item === 'object' ? item.details || item.description || '' : '', 'hardware detail'))}</small></div>`).join('') : `<div class="empty-state"><b>${state.runtime.loading ? 'Loading hardware inventory…' : 'No hardware method reported'}</b><br><small>${esc(displayText(state.runtime.error || 'This is not inferred from the computer name or graphics vendor.', 'runtime detail'))}</small></div>`}</div></div>`;
   },
 
   streaming: () => `${pageHead('Live output', 'Streaming', 'Configure a real HLS playlist, RTMP URL, or SRT URL; nothing is preconnected.', '<button class="filled" id="queue-stream">Queue stream</button>')}<div class="grid"><div class="card span6"><div class="list">${pickerCard('streaming','Input')}${state.form.streamMode === 'hls' ? pickerCard('streaming','HLS playlist',true) : ''}</div>${field('Mode',select('stream-mode',['hls','rtmp','srt'],state.form.streamMode))}${state.form.streamMode === 'hls' ? '<p class="notice">Segments are written beside the selected playlist through the same trusted output handle.</p>' : field('Validated streaming URL',input('stream-target',state.form.streamTarget,'text','placeholder="rtmp://… or srt://… (credentials are not accepted)"'))}</div>
@@ -470,12 +476,12 @@ const VIEWS = {
     const selected = state.jobs.find((job) => job.id === state.selectedJobId) || state.jobs[0];
     const logs = selected?.logs || [];
     return `${pageHead('Durable queue', 'Jobs & logs', 'Live process state, progress facts, exit status, output validation, and bounded logs.', '<button class="outlined" id="refresh-jobs">Refresh</button><button class="outlined" id="clear-finished">Clear finished</button>')}<div class="card bulk-bar"><b>${state.selectedJobs.size} selected</b><button id="jobs-select-all">Select all</button><button id="jobs-select-none">Clear</button><button id="jobs-pause">Pause</button><button id="jobs-resume">Resume</button><button id="jobs-back">Move to back</button><button id="jobs-cancel" style="color:var(--danger)">Cancel</button></div>
-      <div class="list">${jobRows(true)}</div><div class="card" style="margin-top:14px"><div class="section-head"><h2>${selected ? esc(selected.label) : 'Job log'}</h2><input id="log-search" placeholder="Filter log lines"></div>${selected?.error ? `<p class="notice" style="color:var(--danger)"><b>Failure:</b> ${esc(selected.error)}</p>` : ''}<div class="log-pane" id="log-pane">${logs.length ? logs.map((line) => `<div>${esc(line)}</div>`).join('') : '<div>No log lines available.</div>'}</div></div>`;
+      <div class="list">${jobRows(true)}</div><div class="card" style="margin-top:14px"><div class="section-head"><h2>${selected ? esc(displayText(selected.label, 'job')) : 'Job log'}</h2><input id="log-search" placeholder="Filter log lines"></div>${selected?.error ? `<p class="notice" style="color:var(--danger)"><b>Failure:</b> ${esc(displayText(selected.error, 'job error'))}</p>` : ''}<div class="log-pane" id="log-pane">${logs.length ? logs.map((line) => `<div>${esc(displayText(line, 'job file'))}</div>`).join('') : '<div>No log lines available.</div>'}</div></div>`;
   },
 
   composer: () => `${pageHead('Structured argv', 'Command composer', 'One argument per line. The renderer never parses or executes a shell string.', '<button class="filled" id="queue-composer">Queue command</button>')}<div class="grid"><div class="card span5"><div class="list">${pickerCard('composer','Input')}${pickerCard('composer','Output',true)}</div><p class="hint">Blank lines are ignored. Executable names and shell operators are rejected by the builder.</p></div><div class="card span7">${field('Arguments',`<textarea id="composer-args" class="mono" rows="18">${esc(state.form.composerArgs)}</textarea>`)}<pre class="cmd-pre" id="composer-preview"></pre></div></div>`,
 
-  converter: () => `${pageHead('Media conversion', 'File converter', 'Add a real batch, inspect actual media types, choose a supported target, and queue each file.', '<button class="outlined" id="converter-add">Add files</button><button class="filled" id="queue-converter">Queue supported files</button>')}<div class="grid"><div class="card span7"><div class="list">${state.converterFiles.length ? state.converterFiles.map((file,index) => `<div class="list-item"><span class="ms">draft</span><span style="flex:1"><b>${esc(file.name)}</b><br><small>${esc(file.details || file.kind || 'Type will be validated by the runtime')}</small></span><span class="tag${file.supported ? '' : ' idle'}">${file.supported ? 'READY' : 'UNSUPPORTED'}</span><button class="converter-remove" data-index="${index}">×</button></div>`).join('') : '<div class="empty-state"><b>No files added</b><br><small>The runtime performs bounded byte detection; extensions are not trusted.</small></div>'}</div></div><div class="card span5"><h2>Target</h2>${field('Output type',select('converter-target',['mp4','mkv','webm','mp3','flac','wav','png','jpg'],state.form.converterTarget))}<p class="notice">Media conversions may be lossy. Originals remain untouched and each queued result is validated by the runtime.</p></div></div>`,
+  converter: () => `${pageHead('Media conversion', 'File converter', 'Add a real batch, inspect actual media types, choose a supported target, and queue each file.', '<button class="outlined" id="converter-add">Add files</button><button class="filled" id="queue-converter">Queue supported files</button>')}<div class="grid"><div class="card span7"><div class="list">${state.converterFiles.length ? state.converterFiles.map((file,index) => `<div class="list-item"><span class="ms">draft</span><span style="flex:1"><b>${esc(displayText(file.name, 'input file'))}</b><br><small>${esc(displayText(file.details || file.kind || 'Type will be validated by the runtime', 'file detail'))}</small></span><span class="tag${file.supported ? '' : ' idle'}">${file.supported ? 'READY' : 'UNSUPPORTED'}</span><button class="converter-remove" data-index="${index}">×</button></div>`).join('') : '<div class="empty-state"><b>No files added</b><br><small>The runtime performs bounded byte detection; extensions are not trusted.</small></div>'}</div></div><div class="card span5"><h2>Target</h2>${field('Output type',select('converter-target',['mp4','mkv','webm','mp3','flac','wav','png','jpg'],state.form.converterTarget))}<p class="notice">Media conversions may be lossy. Originals remain untouched and each queued result is validated by the runtime.</p></div></div>`,
 
   settings: () => `${pageHead('Application', 'Settings', 'Execution, appearance, and message voice preferences persist locally.', '')}<div class="grid"><div class="card span6"><h2>Appearance</h2><div class="seg"><button id="theme-dark" class="${state.theme === 'dark' ? 'active' : ''}">Dark</button><button id="theme-light" class="${state.theme === 'light' ? 'active' : ''}">Light</button></div><button class="tonal" id="logo-settings" style="margin-top:14px">Customize app logo</button></div>
     <div class="card span6"><h2>Execution</h2>${field('Parallel jobs',input('setting-parallel',state.settings.parallel,'number','min="1" max="8"'))}<label class="check-row"><input id="setting-hardware" type="checkbox"${state.settings.preferHardware ? ' checked' : ''}> Prefer hardware encoders reported by runtime</label><label class="check-row"><input id="setting-passlogs" type="checkbox"${state.settings.keepPassLogs ? ' checked' : ''}> Keep intermediate two-pass logs</label><label class="check-row"><input id="setting-notify" type="checkbox"${state.settings.notifyComplete ? ' checked' : ''}> Notify on job completion</label></div>
@@ -488,7 +494,7 @@ const VIEWS = {
 const catalogView = (view) => {
   const kind = CATALOG_KINDS[view], rows = state.catalogs[kind] || [], error = state.catalogErrors[kind], loading = state.catalogLoading[kind];
   const label = GROUPS.registry.items.find((item) => item[0] === view)?.[2] || view;
-  return `${pageHead('Bundled runtime inventory', label, 'Entries come directly from the bundled FFmpeg executable.', '<input id="catalog-search" placeholder="Search this inventory"><button class="tonal" id="catalog-refresh">Refresh</button>')}<div id="catalog-results" class="registry-grid">${loading ? '<div class="empty-state">Loading runtime inventory…</div>' : error ? `<div class="empty-state"><b>Inventory unavailable</b><br><small>${esc(error)}</small></div>` : rows.length ? rows.slice(0,2000).map((entry,index) => { const item = typeof entry === 'string' ? { name: entry } : entry; return `<button class="registry-row" data-catalog-index="${index}"><b>${esc(item.name || item.id || item.key || '')}</b><span class="desc">${esc(item.description || item.details || item.flags || '')}</span><span class="tag">${esc(item.type || kind)}</span><span class="ms">tune</span></button>`; }).join('') : '<div class="empty-state"><b>No entries reported</b><br><small>The app does not substitute a fabricated registry.</small></div>'}</div><p class="hint">${rows.length} entries loaded. Search filters this bounded local view.</p>`;
+  return `${pageHead('Bundled runtime inventory', label, 'Entries come directly from the bundled FFmpeg executable.', '<input id="catalog-search" placeholder="Search this inventory"><button class="tonal" id="catalog-refresh">Refresh</button>')}<div id="catalog-results" class="registry-grid">${loading ? '<div class="empty-state">Loading runtime inventory…</div>' : error ? `<div class="empty-state"><b>Inventory unavailable</b><br><small>${esc(displayText(error, 'inventory error'))}</small></div>` : rows.length ? rows.slice(0,2000).map((entry,index) => { const item = typeof entry === 'string' ? { name: entry } : entry; return `<button class="registry-row" data-catalog-index="${index}"><b>${esc(item.name || item.id || item.key || '')}</b><span class="desc">${esc(displayText(item.description || item.details || item.flags || '', 'inventory detail'))}</span><span class="tag">${esc(item.type || kind)}</span><span class="ms">tune</span></button>`; }).join('') : '<div class="empty-state"><b>No entries reported</b><br><small>The app does not substitute a fabricated registry.</small></div>'}</div><p class="hint">${rows.length} entries loaded. Search filters this bounded local view.</p>`;
 };
 Object.keys(CATALOG_KINDS).forEach((view) => { VIEWS[view] = () => catalogView(view); });
 VIEWS.matrix = () => `${pageHead('Capability inputs', 'Capability matrix', 'Browse the real codec and container inventories together; compatibility is never guessed.', '<input id="matrix-search" placeholder="Filter both inventories">')}<div class="grid"><div class="card span6"><h2>Codecs reported by build</h2><div id="matrix-codecs" class="list">${(state.catalogs.codecs||[]).slice(0,250).map((entry)=>`<div class="list-item matrix-entry"><b>${esc(typeof entry==='string'?entry:entry.name||entry.id||'')}</b><small>${esc(typeof entry==='object'?entry.description||entry.flags||'':'')}</small></div>`).join('')||'<div class="empty-state">Loading codecs…</div>'}</div></div><div class="card span6"><h2>Formats reported by build</h2><div id="matrix-formats" class="list">${(state.catalogs.formats||[]).slice(0,250).map((entry)=>`<div class="list-item matrix-entry"><b>${esc(typeof entry==='string'?entry:entry.name||entry.id||'')}</b><small>${esc(typeof entry==='object'?entry.description||entry.flags||'':'')}</small></div>`).join('')||'<div class="empty-state">Loading formats…</div>'}</div></div></div>`;
@@ -508,7 +514,7 @@ function render() {
   $('#rail').innerHTML = RAIL.map(([id,icon,label]) => `<button class="rail-item${id === group ? ' active' : ''}" data-group="${id}"><span class="ms">${icon}</span><b>${label}</b></button>`).join('') + '<div class="rail-spacer"></div><button class="rail-item" id="palette-open"><span class="ms">keyboard_command_key</span><b>Commands</b></button>';
   const version = state.runtime.loading ? 'Checking runtime…' : state.runtime.available ? `FFmpeg ${state.runtime.ffmpegVersion || state.runtime.version || 'ready'}` : 'FFmpeg unavailable';
   const runtimeNote = state.runtime.error || (state.runtime.ffprobeVersion ? `ffprobe ${state.runtime.ffprobeVersion} · bundled runtime` : 'Bundled runtime');
-  $('#subnav').innerHTML = `<p class="eyebrow">${esc(GROUPS[group].title)}</p><div style="display:grid;gap:3px">${GROUPS[group].items.map(([id,icon,label]) => `<button class="subnav-item${id === state.view ? ' active' : ''}" data-go="${id}"><span class="ms">${icon}</span><span>${esc(label)}</span></button>`).join('')}</div><div class="build-note"><b>${esc(version)}</b><br><span>${esc(runtimeNote)}</span></div>`;
+  $('#subnav').innerHTML = `<p class="eyebrow">${esc(GROUPS[group].title)}</p><div style="display:grid;gap:3px">${GROUPS[group].items.map(([id,icon,label]) => `<button class="subnav-item${id === state.view ? ' active' : ''}" data-go="${id}"><span class="ms">${icon}</span><span>${esc(label)}</span></button>`).join('')}</div><div class="build-note"><b>${esc(version)}</b><br><span>${esc(displayText(runtimeNote, 'runtime detail'))}</span></div>`;
   $('#tabs').innerHTML = state.tabs.map((tab) => `<button class="tab${(tab.view || tab.id) === state.view ? ' active' : ''}" data-go="${esc(tab.view || tab.id)}" role="tab" data-tab-id="${esc(tab.id)}"><span class="ms">${esc(normalizeTabIcon(tab.icon))}</span><span>${esc(tab.label)}</span>${tab.pinned ? '<span class="ms">keep</span>' : ''}</button>`).join('') + '<button id="tab-add" title="Open current view as a tab">+</button><button id="tab-list"><span class="ms">menu</span></button><div class="palette-hint" id="palette-open-2">Search everything <b>Ctrl+Shift+F</b></div>';
   $('#content').innerHTML = (VIEWS[state.view] || VIEWS.overview)(); $('#live-command').textContent = livePreview();
   document.body.classList.toggle('light', state.theme === 'light');
@@ -529,7 +535,7 @@ function updatePreviews() {
   const preview = $('#cmd-pre'); if (preview) preview.textContent = convertPreview(); $('#live-command').textContent = livePreview();
   const composer = $('#composer-preview'); if (composer) {
     try { composer.textContent = commandPreview(build('composer', composerValues())); }
-    catch (error) { composer.textContent = error.message; }
+    catch (error) { composer.textContent = displayText(error.message, 'command detail'); }
   }
 }
 
@@ -710,7 +716,7 @@ async function clearFinished() {
 }
 function filterLogs() {
   const selected = state.jobs.find((job) => job.id === state.selectedJobId) || state.jobs[0], query = $('#log-search').value.toLowerCase();
-  $('#log-pane').replaceChildren(...(selected?.logs || []).filter((line) => line.toLowerCase().includes(query)).map((line) => { const div = document.createElement('div'); div.textContent = line; return div; }));
+  $('#log-pane').replaceChildren(...(selected?.logs || []).filter((line) => line.toLowerCase().includes(query)).map((line) => { const div = document.createElement('div'); div.textContent = displayText(line, 'job file'); return div; }));
 }
 async function addConverterFiles() {
   const files = await pickFile(null,{multiple:true,purpose:'converter'});
@@ -768,16 +774,16 @@ async function refreshRuntime() {
 }
 
 function notify(title,body,type='info') {
-  const item = { id: String(Date.now()) + Math.random().toString(16).slice(2), title:bounded(title,100), body:bounded(body,1000), type, at:new Date().toISOString() };
+  const item = { id: String(Date.now()) + Math.random().toString(16).slice(2), title:bounded(displayText(title, 'notification'),100), body:bounded(displayText(body, 'notification detail'),1000), type, at:new Date().toISOString() };
   state.notifications.unshift(item); state.notifications = state.notifications.slice(0,200); store.set('notifications',state.notifications);
   const toast = document.createElement('div'); toast.className = 'toast'; const heading = document.createElement('b'); heading.textContent = item.title; const copy = document.createElement('small'); copy.textContent = item.body; toast.append(heading,copy); $('#toast-zone').append(toast); setTimeout(() => toast.remove(), type === 'error' ? 12000 : 6000);
 }
 function openNotifications() {
   const list = $('#notification-list'), search = $('#notification-search');
   const draw = () => {
-    const query = search.value.toLowerCase(); list.replaceChildren(); const items = state.notifications.filter((item) => `${item.title} ${item.body}`.toLowerCase().includes(query));
+    const query = search.value.toLowerCase(); list.replaceChildren(); const items = state.notifications.filter((item) => `${displayText(item.title, 'notification')} ${displayText(item.body, 'notification detail')}`.toLowerCase().includes(query));
     if (!items.length) { const empty=document.createElement('p'); empty.className='hint'; empty.textContent='No matching notifications.'; list.append(empty); return; }
-    items.forEach((item) => { const row=document.createElement('div'); row.className='list-item'; const text=document.createElement('span'); text.style.flex='1'; const title=document.createElement('b'); title.textContent=item.title; const body=document.createElement('small'); body.textContent=item.body; const at=document.createElement('small'); at.textContent=item.at; text.append(title,document.createElement('br'),body,document.createElement('br'),at); row.append(text); list.append(row); });
+    items.forEach((item) => { const row=document.createElement('div'); row.className='list-item'; const text=document.createElement('span'); text.style.flex='1'; const title=document.createElement('b'); title.textContent=displayText(item.title, 'notification'); const body=document.createElement('small'); body.textContent=displayText(item.body, 'notification detail'); const at=document.createElement('small'); at.textContent=item.at; text.append(title,document.createElement('br'),body,document.createElement('br'),at); row.append(text); list.append(row); });
   };
   search.value=''; search.oninput=draw; draw(); $('#notification-clear').onclick=()=>openConfirm('Clear notification history?','All locally stored notifications will be removed.',()=>{state.notifications=[];store.set('notifications',[]);draw();}); $('#notification-dialog').showModal();
 }

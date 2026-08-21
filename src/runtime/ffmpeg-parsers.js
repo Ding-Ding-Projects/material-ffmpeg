@@ -4,6 +4,7 @@ const { StringDecoder } = require('node:string_decoder');
 
 const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor', 'raw']);
 const SIMPLE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.+\-]*$/;
+const LAYOUT_NAME = /^[A-Za-z0-9][A-Za-z0-9_.+()\-]*$/;
 const PROGRESS_KEY = /^[A-Za-z][A-Za-z0-9_.\-]*$/;
 
 function parserError(code, message, ErrorType = Error) {
@@ -253,6 +254,18 @@ function parseProbeJson(text, options = {}) {
     throw parserError('INVALID_PROBE_ROOT', 'ffprobe JSON root must be an object.', TypeError);
   }
 
+  // ffprobe can emit a JSON error object even when its transport returned a
+  // syntactically valid document. Do not turn that unavailable/error result
+  // into an apparently successful empty inspection.
+  if (Object.prototype.hasOwnProperty.call(parsed, 'error')) {
+    const detail = typeof parsed.error === 'string'
+      ? parsed.error
+      : parsed.error && typeof parsed.error === 'object' && typeof parsed.error.string === 'string'
+        ? parsed.error.string
+        : 'ffprobe reported an inspection error.';
+    throw parserError('PROBE_ERROR', detail.slice(0, 4096));
+  }
+
   const state = {
     maxDepth: limit(options.maxDepth, 24, 64),
     maxNodes: limit(options.maxNodes, 100000, 1000000),
@@ -277,6 +290,12 @@ function parseProbeJson(text, options = {}) {
     }
     output[collection] = cloneProbeValue(parsed[collection], state, 1);
   }
+  if (!Object.prototype.hasOwnProperty.call(output, 'format')
+    && !Object.prototype.hasOwnProperty.call(output, 'streams')
+    && !Object.prototype.hasOwnProperty.call(output, 'chapters')
+    && !Object.prototype.hasOwnProperty.call(output, 'programs')) {
+    throw parserError('EMPTY_PROBE', 'ffprobe returned no format, stream, chapter, or program data.');
+  }
   return output;
 }
 
@@ -289,7 +308,12 @@ function normalizedLines(text, options, label) {
   if (lines.length > maxLines) {
     throw parserError('TOO_MANY_LINES', `${label} exceeds the ${maxLines}-line limit.`, RangeError);
   }
-  return lines.map((line) => line.slice(0, maxLineChars).replace(/[ \t]+$/u, ''));
+  for (const line of lines) {
+    if (line.length > maxLineChars) {
+      throw parserError('LINE_TOO_LARGE', `${label} contains a line exceeding the ${maxLineChars}-character limit.`, RangeError);
+    }
+  }
+  return lines.map((line) => line.replace(/[ \t]+$/u, ''));
 }
 
 function addUnique(entries, seen, key, value, maxEntries) {
@@ -304,25 +328,26 @@ function parentheticalNames(description, label) {
   return match ? match[1].trim().split(/\s+/u).filter((name) => SIMPLE_NAME.test(name)) : [];
 }
 
-function parseCodecs(lines, maxEntries) {
+function parseCodecs(lines, maxEntries, mode = 'codecs') {
   const entries = [];
   const seen = new Set();
   const mediaTypes = { V: 'video', A: 'audio', S: 'subtitle', D: 'data' };
   for (const line of lines) {
-    const match = line.match(/^\s*([D. ])([E. ])([VASD. ])([I. ])([L. ])([S. ])\s+([^\s=]+)\s*(.*)$/u);
-    if (!match || !SIMPLE_NAME.test(match[7])) continue;
-    const flags = match.slice(1, 7).map((flag) => flag === ' ' ? '.' : flag).join('');
-    const description = match[8].trim();
-    addUnique(entries, seen, match[7], {
-      name: match[7],
+    const match = line.match(/^\s*([A-Z. ]{6})\s+([^\s=]+)\s*(.*)$/u);
+    if (!match || !SIMPLE_NAME.test(match[2])) continue;
+    const flags = match[1].replace(/ /gu, '.');
+    const description = match[3].trim();
+    const name = match[2];
+    addUnique(entries, seen, name, {
+      name,
       description,
       flags,
-      canDecode: flags[0] === 'D',
-      canEncode: flags[1] === 'E',
-      mediaType: mediaTypes[flags[2]] || 'unknown',
-      intraOnly: flags[3] === 'I',
-      lossy: flags[4] === 'L',
-      lossless: flags[5] === 'S',
+      canDecode: mode === 'decoders' || flags.includes('D'),
+      canEncode: mode === 'encoders' || flags.includes('E'),
+      mediaType: mediaTypes[mode === 'codecs' ? flags[2] : flags[0]] || 'unknown',
+      intraOnly: flags.includes('I'),
+      lossy: flags.includes('L'),
+      lossless: flags.includes('S'),
       decoders: parentheticalNames(description, 'decoders'),
       encoders: parentheticalNames(description, 'encoders'),
     }, maxEntries);
@@ -411,6 +436,60 @@ function parseFilters(lines, maxEntries) {
   return entries;
 }
 
+function parsePixelFormats(lines, maxEntries) {
+  const entries = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const match = line.match(/^\s*([IO. ]{5})\s+([^\s=]+)\s+(.*)$/u);
+    if (!match || !SIMPLE_NAME.test(match[2])) continue;
+    const flags = match[1].replace(/ /gu, '.');
+    const columns = match[3].trim().split(/\s+/u);
+    addUnique(entries, seen, match[2], {
+      name: match[2],
+      flags,
+      canDecode: flags[0] === 'I',
+      canEncode: flags[1] === 'O',
+      hardwareAccelerated: flags[2] === 'H',
+      paletted: flags[3] === 'P',
+      bitstream: flags[4] === 'B',
+      components: /^\d+$/u.test(columns[0] || '') ? Number(columns[0]) : null,
+      bitsPerPixel: /^\d+(?:\.\d+)?$/u.test(columns[1] || '') ? Number(columns[1]) : null,
+      details: columns.slice(2).join(' '),
+    }, maxEntries);
+  }
+  return entries;
+}
+
+function parseSampleFormats(lines, maxEntries) {
+  const entries = [];
+  const seen = new Set();
+  for (const line of lines) {
+    const match = line.match(/^\s*([^\s=]+)\s+(\d+)\s*$/u);
+    if (!match || !SIMPLE_NAME.test(match[1])) continue;
+    addUnique(entries, seen, match[1], { name: match[1], bits: Number(match[2]) }, maxEntries);
+  }
+  return entries;
+}
+
+function parseChannelLayouts(lines, maxEntries) {
+  const entries = [];
+  const seen = new Set();
+  let section = '';
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || /^[-=]+$/u.test(line)) continue;
+    if (/:$/u.test(line)) {
+      section = line.slice(0, -1).toLocaleLowerCase('en-US');
+      continue;
+    }
+    if (!section || /^(?:name|description)\b/iu.test(line)) continue;
+    const match = line.match(/^([^\s=]+)(?:\s*=|\s{2,})(?:\s*)(.*)$/u);
+    if (!match || !LAYOUT_NAME.test(match[1]) || !match[2]) continue;
+    addUnique(entries, seen, match[1], { name: match[1], description: match[2].trim(), section }, maxEntries);
+  }
+  return entries;
+}
+
 function parseHelpOptions(lines, maxEntries) {
   const entries = [];
   const seen = new Set();
@@ -463,10 +542,14 @@ function parseInventory(kind, text, options = {}) {
   const lines = normalizedLines(text, options, `FFmpeg ${canonicalKind || 'inventory'}`);
 
   if (canonicalKind === 'codecs') return parseCodecs(lines, maxEntries);
+  if (canonicalKind === 'encoders' || canonicalKind === 'decoders') return parseCodecs(lines, maxEntries, canonicalKind);
   if (canonicalKind === 'formats' || canonicalKind === 'devices') return parseFormats(lines, maxEntries);
   if (canonicalKind === 'protocols') return parseProtocols(lines, maxEntries);
   if (canonicalKind === 'bsfs' || canonicalKind === 'hwaccels') return parseNameList(lines, maxEntries);
   if (canonicalKind === 'filters') return parseFilters(lines, maxEntries);
+  if (canonicalKind === 'pixelformats' || canonicalKind === 'pixel-formats' || canonicalKind === 'pixel_formats') return parsePixelFormats(lines, maxEntries);
+  if (canonicalKind === 'sampleformats' || canonicalKind === 'sample-formats' || canonicalKind === 'sample_formats') return parseSampleFormats(lines, maxEntries);
+  if (canonicalKind === 'channellayouts' || canonicalKind === 'channel-layouts' || canonicalKind === 'channel_layouts' || canonicalKind === 'layouts') return parseChannelLayouts(lines, maxEntries);
   if (canonicalKind === 'help') return parseHelpOptions(lines, maxEntries);
   throw parserError('UNSUPPORTED_INVENTORY', `Unsupported FFmpeg inventory kind: ${kind}`, RangeError);
 }

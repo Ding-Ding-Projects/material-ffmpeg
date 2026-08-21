@@ -5,8 +5,9 @@
   const escg = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const num = (o) => ({ kind: 'num', ...o }), en = (o) => ({ kind: 'enum', ...o }), bo = (o) => ({ kind: 'bool', ...o }), arr = (o) => ({ kind: 'array', ...o });
 
-  const RUNTIME_LIMITS = Object.freeze({ results: 250, name: 256, description: 2000, help: 65536, error: 400, timeoutMs: 15000 });
+  const RUNTIME_LIMITS = Object.freeze({ results: 250, name: 256, description: 2000, help: 65536, error: 400, timeoutMs: 15000, cacheMs: 300000 });
   const runtimeCache = new Map();
+  const runtimeRequestEpoch = new Map();
   const boundedText = (value, max) => String(value == null ? '' : value).replace(/\u0000/g, '').slice(0, max);
   const runtimeErrorText = (error) => boundedText(error && error.message ? error.message : error || 'Unknown runtime error.', RUNTIME_LIMITS.error);
   const validCatalogToken = (value, label) => {
@@ -14,10 +15,30 @@
     if (!/^[a-z0-9][a-z0-9:_-]{0,63}$/i.test(token)) throw new Error(`${label} contains unsupported characters.`);
     return token;
   };
-  const withRuntimeTimeout = (operation) => new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('The bundled FFmpeg request timed out.')), RUNTIME_LIMITS.timeoutMs);
-    Promise.resolve(operation).then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+  const runtimeRequestError = (code, message) => Object.assign(new Error(message), { code });
+  const runtimeResultStatus = (error) => error && error.code === 'RUNTIME_REQUEST_CANCELLED' ? 'cancelled' : error && error.code === 'RUNTIME_REQUEST_TIMEOUT' ? 'timeout' : 'error';
+  const withRuntimeTimeout = (key, operation) => new Promise((resolve, reject) => {
+    const epoch = (runtimeRequestEpoch.get(key) || 0) + 1;
+    runtimeRequestEpoch.set(key, epoch);
+    const timer = setTimeout(() => reject(runtimeRequestError('RUNTIME_REQUEST_TIMEOUT', 'The bundled FFmpeg request timed out.')), RUNTIME_LIMITS.timeoutMs);
+    Promise.resolve().then(operation).then((value) => {
+      clearTimeout(timer);
+      if (runtimeRequestEpoch.get(key) !== epoch) reject(runtimeRequestError('RUNTIME_REQUEST_CANCELLED', 'The bundled FFmpeg request was replaced by a newer request.'));
+      else { runtimeRequestEpoch.delete(key); resolve(value); }
+    }, (error) => { clearTimeout(timer); if (runtimeRequestEpoch.get(key) === epoch) runtimeRequestEpoch.delete(key); reject(error); });
   });
+  const readRuntimeCache = (key) => {
+    const cached = runtimeCache.get(key);
+    if (!cached || Date.now() - cached.at >= RUNTIME_LIMITS.cacheMs) { runtimeCache.delete(key); return null; }
+    return cached.value;
+  };
+  const writeRuntimeCache = (key, value) => {
+    runtimeCache.delete(key);
+    runtimeCache.set(key, { at: Date.now(), value });
+    while (runtimeCache.size > 256) runtimeCache.delete(runtimeCache.keys().next().value);
+    return value;
+  };
+  const cancelRuntimeRequests = () => { runtimeRequestEpoch.clear(); };
   const runtimeCatalogApi = () => {
     const catalog = window.api && window.api.catalog;
     return catalog && typeof catalog.list === 'function' && typeof catalog.help === 'function' ? catalog : null;
@@ -34,8 +55,23 @@
     if (!item || typeof item !== 'object') return null;
     const name = boundedText(item.name ?? item.label ?? item.id ?? item.key ?? item.value, RUNTIME_LIMITS.name).trim();
     if (!name) return null;
-    const description = boundedText(item.description ?? item.summary ?? item.longName ?? item.detail ?? item.type ?? '', RUNTIME_LIMITS.description).trim();
-    return { id: boundedText(item.id ?? item.key ?? name, RUNTIME_LIMITS.name) || name, name, description, index };
+    const description = boundedText(item.description ?? item.summary ?? item.longName ?? item.details ?? item.detail ?? item.type ?? '', RUNTIME_LIMITS.description).trim();
+    const flags = boundedText(item.flags ?? '', 32).trim();
+    const type = boundedText(item.mediaType ?? item.type ?? '', 64).trim();
+    return {
+      id: boundedText(item.id ?? item.key ?? name, RUNTIME_LIMITS.name) || name,
+      name,
+      description,
+      flags,
+      type,
+      canEncode: item.canEncode === true,
+      canDecode: item.canDecode === true,
+      muxing: item.muxing === true,
+      demuxing: item.demuxing === true,
+      input: item.input === true,
+      output: item.output === true,
+      index
+    };
   };
   const catalogArrayFrom = (payload) => {
     if (Array.isArray(payload)) return payload;
@@ -73,31 +109,34 @@
       const api = runtimeCatalogApi();
       if (!api) return { status: 'unavailable', kind: safeKind, items: [], error: 'The bundled FFmpeg catalog bridge is unavailable.' };
       const cacheKey = `list:${safeKind}:${limit}`;
-      if (!options.refresh && runtimeCache.has(cacheKey)) return runtimeCache.get(cacheKey);
+      const cached = options.refresh ? null : readRuntimeCache(cacheKey);
+      if (cached) return cached;
       try {
-        const normalized = normalizeCatalogPayload(await withRuntimeTimeout(api.list(safeKind)), limit);
+        const normalized = normalizeCatalogPayload(await withRuntimeTimeout(cacheKey, () => api.list(safeKind)), limit);
         const result = { status: normalized.items.length ? 'ready' : 'empty', kind: safeKind, ...normalized };
-        runtimeCache.set(cacheKey, result); return result;
+        return writeRuntimeCache(cacheKey, result);
       } catch (error) {
-        return { status: 'error', kind: safeKind, items: [], error: runtimeErrorText(error) };
+        return { status: runtimeResultStatus(error), kind: safeKind, items: [], error: runtimeErrorText(error) };
       }
     },
     async help(kind, name, options = {}) {
       let safeKind; let safeName;
-      try { safeKind = validCatalogToken(kind, 'Help kind'); safeName = boundedText(name, RUNTIME_LIMITS.name).trim(); if (!safeName) throw new Error('Help name is required.'); } catch (error) { return { status: 'error', kind: '', name: '', text: '', error: runtimeErrorText(error) }; }
+      try { safeKind = validCatalogToken(kind, 'Help kind'); safeName = boundedText(name, RUNTIME_LIMITS.name).trim(); if (!/^[a-z0-9_.+-]{1,128}$/i.test(safeName)) throw new Error('Help name contains unsupported characters.'); } catch (error) { return { status: 'error', kind: '', name: '', text: '', error: runtimeErrorText(error) }; }
       const api = runtimeCatalogApi();
       if (!api) return { status: 'unavailable', kind: safeKind, name: safeName, text: '', error: 'The bundled FFmpeg help bridge is unavailable.' };
       const cacheKey = `help:${safeKind}:${safeName}`;
-      if (!options.refresh && runtimeCache.has(cacheKey)) return runtimeCache.get(cacheKey);
+      const cached = options.refresh ? null : readRuntimeCache(cacheKey);
+      if (cached) return cached;
       try {
-        const normalized = normalizeHelpPayload(await withRuntimeTimeout(api.help(safeKind, safeName)));
+        const normalized = normalizeHelpPayload(await withRuntimeTimeout(cacheKey, () => api.help(safeKind, safeName)));
         const result = { status: normalized.text.trim() ? 'ready' : 'empty', kind: safeKind, name: safeName, ...normalized };
-        runtimeCache.set(cacheKey, result); return result;
+        return writeRuntimeCache(cacheKey, result);
       } catch (error) {
-        return { status: 'error', kind: safeKind, name: safeName, text: '', error: runtimeErrorText(error) };
+        return { status: runtimeResultStatus(error), kind: safeKind, name: safeName, text: '', error: runtimeErrorText(error) };
       }
     },
-    clearCache() { runtimeCache.clear(); }
+    clearCache() { runtimeCache.clear(); cancelRuntimeRequests(); },
+    cancelPending() { cancelRuntimeRequests(); }
   };
 
   const DOCS = {
@@ -170,7 +209,7 @@
     } else if (state.status === 'empty') {
       const empty = makeNode('div', 'notice', 'The bundled FFmpeg build returned no help text for this entry.');
       empty.setAttribute('role', 'status'); host.append(empty);
-    } else if (state.status === 'error' || state.status === 'unavailable') {
+    } else if (['error', 'unavailable', 'timeout', 'cancelled'].includes(state.status)) {
       const error = makeNode('div', 'notice', state.error || 'Bundled FFmpeg help is unavailable.');
       error.setAttribute('role', 'alert'); host.append(error);
     } else {
@@ -182,7 +221,7 @@
 
   let panel = null;
   let catalogPanel = null;
-  const closeCatalogPanel = () => { if (catalogPanel) { catalogPanel.remove(); catalogPanel = null; } };
+  const closeCatalogPanel = () => { runtimeCatalog.cancelPending(); if (catalogPanel) { catalogPanel.remove(); catalogPanel = null; } };
   window.openDoc = function openDoc(id) {
     const e = DOCS[id]; if (!e) return;
     closeCatalogPanel();
@@ -243,7 +282,7 @@
         runtimeHelpState = result; draw();
       };
       // wire
-      const close = () => { runtimeRequest += 1; if (panel === ownPanel) { panel.remove(); panel = null; } };
+      const close = () => { runtimeRequest += 1; runtimeCatalog.cancelPending(); if (panel === ownPanel) { panel.remove(); panel = null; } };
       $g('.doc-close', panel).onclick = close; $g('.doc-cancel', panel).onclick = close;
       $g('.doc-apply', panel).onclick = () => {
         if (e.stateKey != null) st[e.stateKey] = e.kind === 'enum' ? sel : e.kind === 'num' ? val : boolV;
@@ -281,6 +320,19 @@
 
   // Runtime-derived catalogs remain separate from the static guide above. The bridge output is
   // bounded and rendered with textContent so a tool name or help line can never become markup.
+  const catalogKindForHelp = (kind) => ({ encoder: 'encoders', decoder: 'decoders', filter: 'filters', muxer: 'formats', demuxer: 'formats', protocol: 'protocols', bsf: 'bsfs' }[kind] || null);
+  const helpKindForCatalogItem = (kind, item, configuredKind) => {
+    if (configuredKind) return configuredKind;
+    if (kind === 'encoders') return 'encoder';
+    if (kind === 'decoders') return 'decoder';
+    if (kind === 'filters') return 'filter';
+    if (kind === 'protocols') return 'protocol';
+    if (kind === 'bsfs') return 'bsf';
+    if (kind === 'codecs') return item.canEncode || String(item.flags || '').includes('E') ? 'encoder' : item.canDecode || String(item.flags || '').includes('D') ? 'decoder' : null;
+    if (kind === 'formats' || kind === 'devices') return item.muxing || String(item.flags || '').includes('E') ? 'muxer' : item.demuxing || String(item.flags || '').includes('D') ? 'demuxer' : null;
+    return null;
+  };
+
   function openRuntimeCatalog(options = {}) {
     const config = typeof options === 'string' ? { kind: options } : (options || {});
     let kind;
@@ -295,6 +347,7 @@
     let query = boundedText(config.query || '', 256);
     let listRequest = 0;
     let helpRequest = 0;
+    let initialSelectionPending = Boolean(config.initialItem);
 
     catalogPanel = document.createElement('div');
     const ownPanel = catalogPanel;
@@ -354,7 +407,7 @@
         if (helpState.truncated) detailHost.append(makeNode('small', '', `Help output was limited to ${RUNTIME_LIMITS.help.toLocaleString()} characters.`));
       } else if (helpState.status === 'empty') {
         detailHost.append(makeNode('div', 'notice', 'The bundled FFmpeg build returned no help text for this entry.'));
-      } else if (helpState.status === 'error' || helpState.status === 'unavailable') {
+      } else if (['error', 'unavailable', 'timeout', 'cancelled'].includes(helpState.status)) {
         const failure = makeNode('div', 'notice', helpState.error || 'Bundled FFmpeg help is unavailable.'); failure.setAttribute('role', 'alert'); detailHost.append(failure);
       }
       const actions = makeNode('div'); actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
@@ -380,8 +433,13 @@
     };
     const loadHelp = async (item, forceRefresh = false) => {
       selected = item; helpState = { status: 'loading', text: '', error: '', truncated: false }; renderList(); renderDetail();
+      const helpKind = helpKindForCatalogItem(kind, item, config.helpKind);
+      if (!helpKind) {
+        helpState = { status: 'unavailable', text: '', error: `This ${kind} entry does not expose component help in the bundled FFmpeg interface.`, truncated: false };
+        renderDetail(); return;
+      }
       const request = ++helpRequest;
-      const result = await runtimeCatalog.help(kind, item.name, { refresh: forceRefresh });
+      const result = await runtimeCatalog.help(helpKind, item.name, { refresh: forceRefresh });
       if (!isCurrent() || request !== helpRequest || selected !== item) return;
       helpState = result; renderDetail();
     };
@@ -390,7 +448,7 @@
       if (listState.status === 'loading') {
         const loading = makeNode('div', 'notice', 'Loading entries from the bundled FFmpeg build…'); loading.setAttribute('role', 'status'); listHost.append(loading); return;
       }
-      if (listState.status === 'error' || listState.status === 'unavailable') {
+      if (['error', 'unavailable', 'timeout', 'cancelled'].includes(listState.status)) {
         const failure = makeNode('div', 'notice', listState.error || 'The bundled FFmpeg catalog is unavailable.'); failure.setAttribute('role', 'alert'); listHost.append(failure); return;
       }
       const needle = query.trim().toLocaleLowerCase();
@@ -415,6 +473,24 @@
       const result = await runtimeCatalog.list(kind, { limit: RUNTIME_LIMITS.results, refresh: forceRefresh });
       if (!isCurrent() || request !== listRequest) return;
       listState = result; renderList(); renderDetail();
+      if (initialSelectionPending && (result.status === 'ready' || result.status === 'empty')) {
+        initialSelectionPending = false;
+        const targetName = boundedText(config.initialItem, RUNTIME_LIMITS.name).toLocaleLowerCase();
+        const initial = result.items.find((item) => item.name.toLocaleLowerCase() === targetName);
+        if (initial) {
+          if (config.initialHelp !== undefined) {
+            selected = initial;
+            const normalized = normalizeHelpPayload(config.initialHelp);
+            helpState = { status: normalized.text.trim() ? 'ready' : 'empty', kind: config.helpKind || '', name: initial.name, ...normalized };
+            renderList(); renderDetail();
+          } else loadHelp(initial);
+        } else if (config.initialHelp !== undefined) {
+          const normalized = normalizeHelpPayload(config.initialHelp);
+          selected = { id: targetName, name: boundedText(config.initialItem, RUNTIME_LIMITS.name), description: '', flags: '', type: '', index: -1 };
+          helpState = { status: normalized.text.trim() ? 'ready' : 'empty', kind: config.helpKind || '', name: selected.name, ...normalized };
+          renderList(); renderDetail();
+        }
+      }
     };
 
     closeButton.onclick = close;
@@ -433,6 +509,29 @@
     return ownPanel;
   }
 
+  function openRuntimeHelp(options = {}) {
+    const config = options && typeof options === 'object' ? options : {};
+    let helpKind; let name;
+    try {
+      helpKind = validCatalogToken(config.kind, 'Help kind');
+      name = boundedText(config.name, RUNTIME_LIMITS.name).trim();
+      if (!/^[a-z0-9_.+-]{1,128}$/i.test(name)) throw new Error('Help name contains unsupported characters.');
+    } catch (error) {
+      return runtimeCatalog.help(config.kind || '', config.name || '');
+    }
+    const catalogKind = catalogKindForHelp(helpKind);
+    if (!catalogKind) return runtimeCatalog.help(helpKind, name, { refresh: true });
+    return openRuntimeCatalog({
+      kind: catalogKind,
+      helpKind,
+      initialItem: name,
+      initialHelp: config.help,
+      title: `${helpKind}:${name}`,
+      emitSelection: false,
+      closeOnSelect: false
+    });
+  }
+
   window.openOptionCatalog = openRuntimeCatalog;
   window.optionGuides = Object.freeze({
     docs: DOCS,
@@ -440,6 +539,7 @@
     list: (kind, options) => runtimeCatalog.list(kind, options),
     help: (kind, name, options) => runtimeCatalog.help(kind, name, options),
     openCatalog: openRuntimeCatalog,
+    openRuntimeHelp,
     close: () => { if (panel) { panel.remove(); panel = null; } closeCatalogPanel(); },
     clearCache: () => runtimeCatalog.clearCache()
   });

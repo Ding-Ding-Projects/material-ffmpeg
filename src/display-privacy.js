@@ -9,6 +9,7 @@
   const TRAILING_PUNCTUATION = /[),.;}\]]+$/;
   const MAX_DISPLAY_DEPTH = 8;
   const MAX_DISPLAY_ITEMS = 500;
+  const MAX_DISPLAY_KEY_LENGTH = 160;
 
   const ROLE_LABELS = Object.freeze({
     input: 'local input',
@@ -104,6 +105,26 @@
     return output + sanitizeLocalReferences(text.slice(cursor), role);
   };
 
+  const claimSanitizedKey = (candidate, role, reserved) => {
+    const fallback = neutralLabel(role);
+    const base = candidate.length <= MAX_DISPLAY_KEY_LENGTH ? candidate : fallback;
+    if (!reserved.has(base)) {
+      reserved.add(base);
+      return base;
+    }
+
+    for (let index = 2; index <= MAX_DISPLAY_ITEMS + 1; index += 1) {
+      const suffix = ` [${index}]`;
+      const key = `${base.slice(0, MAX_DISPLAY_KEY_LENGTH - suffix.length)}${suffix}`;
+      if (!reserved.has(key)) {
+        reserved.add(key);
+        return key;
+      }
+    }
+
+    return fallback;
+  };
+
   const copyDisplayValue = (value, role, context, depth) => {
     if (typeof value === 'string') return displayText(value, role);
     if (!value || typeof value !== 'object') return value;
@@ -123,10 +144,18 @@
     if (isArray) {
       copy = entries.map((entry) => copyDisplayValue(entry, role, context, depth + 1));
     } else {
-      copy = Object.fromEntries(entries.map(([key, entry]) => [
-        key,
-        copyDisplayValue(entry, nestedRole(key, role), context, depth + 1)
-      ]));
+      const prepared = entries.map(([key, entry]) => {
+        const childRole = nestedRole(key, role);
+        const displayKey = displayText(key, childRole);
+        return { childRole, displayKey, entry, key, sanitized: displayKey !== key };
+      });
+      const reserved = new Set(prepared.filter((item) => !item.sanitized).map((item) => item.key));
+      copy = Object.fromEntries(prepared.map((item) => {
+        const key = item.sanitized
+          ? claimSanitizedKey(item.displayKey, item.childRole, reserved)
+          : item.key;
+        return [key, copyDisplayValue(item.entry, item.childRole, context, depth + 1)];
+      }));
     }
 
     context.seen.delete(value);

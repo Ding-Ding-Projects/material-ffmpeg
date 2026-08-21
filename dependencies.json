@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "dependencies": {
+    "ffmpeg": {
+      "version": "9.0.1",
+      "platform": "windows-x64",
+      "archive": "ffmpeg-9.0.1-full_build.7z",
+      "url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.1-full_build.7z",
+      "sha256": "4b9c814cb07a1f90d05b768ef4eb2abbf89af94bbb924df5b7dbd6e64e1e2b96",
+      "executables": ["ffmpeg.exe", "ffprobe.exe"]
+    },
+    "node": {
+      "version": "22.18.0",
+      "platform": "windows-x64",
+      "archive": "node-v22.18.0-win-x64.zip",
+      "url": "https://nodejs.org/dist/v22.18.0/node-v22.18.0-win-x64.zip",
+      "sha256": "c95d8a7e1c99e669cc08c9f1176e068c1f50847c37908fcb8c35b62482366511"
+    },
+    "sevenZip": {
+      "package": "7zip-bin",
+      "version": "5.2.0",
+      "integrity": "provided by package-lock.json"
+    }
+  }
+}

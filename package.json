@@ -2,25 +2,60 @@
   "name": "material-ffmpeg",
   "productName": "material-ffmpeg",
   "version": "0.1.0",
-  "description": "Local Material 3 Electron control plane for FFmpeg — every codec, filter, muxer, protocol, and flag as a typed UI.",
+  "description": "Local Material 3 desktop control plane for FFmpeg with typed workflows, inspection, and job management.",
   "main": "src/main.js",
   "author": "Ding-Ding-Projects",
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "check": "node --test tests/",
-    "dist": "electron-builder --win squirrel"
+    "dependencies": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/download-dependencies.ps1 -Silent",
+    "icon": "node scripts/generate-app-icon.mjs",
+    "metadata": "node scripts/write-build-metadata.mjs",
+    "prepare:package": "node scripts/clean-output.mjs && npm run icon && npm run metadata && powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/download-ffmpeg.ps1 -Silent",
+    "prepackage:app": "npm run prepare:package",
+    "package:app": "electron-builder --dir --win",
+    "predist": "npm run prepare:package",
+    "dist": "electron-builder --win squirrel",
+    "count:lines": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/count-lines.ps1"
   },
   "devDependencies": {
-    "electron": "^33.0.0",
-    "electron-builder": "^26.0.0",
+    "7zip-bin": "5.2.0",
+    "electron": "33.4.11",
+    "electron-builder": "26.15.3",
     "electron-builder-squirrel-windows": "26.15.3"
   },
   "build": {
     "appId": "dev.dingding.material-ffmpeg",
     "productName": "material-ffmpeg",
     "forceCodeSigning": false,
-    "win": { "target": "squirrel", "signAndEditExecutable": false },
-    "squirrelWindows": { "artifactName": "material-ffmpeg-setup-${version}.exe" }
+    "asar": true,
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/ffmpeg",
+        "to": "ffmpeg",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "resources/build-metadata.json",
+        "to": "build-metadata.json"
+      }
+    ],
+    "directories": {
+      "output": "dist/squirrel-windows"
+    },
+    "win": {
+      "target": "squirrel",
+      "icon": "resources/app-icon.ico",
+      "signExecutable": false,
+      "signAndEditExecutable": false
+    },
+    "squirrelWindows": {
+      "artifactName": "material-ffmpeg-setup-${version}.exe",
+      "msi": false
+    }
   }
 }

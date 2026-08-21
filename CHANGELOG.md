@@ -4,6 +4,7 @@
 
 ### Changed
 
+- The documentation website now publishes the verified `v0.1.502-r1` installer, exact archive provenance, packaged context-menu/search evidence, release data, current status cards, and a privacy-reviewed real application capture.
 - Restored the ZIP-supplied UI's complete contextual right-click routing and wired its existing menu actions to the trusted tab, registry, job, and appearance paths. The context-menu search now retains a usable text field, a compact regex button, bounded viewport placement, and reliable action hit testing.
 - The desktop trim workflow now keeps its input and output behind opaque native-dialog handles, validates positive source ranges or durations, converts an absolute out point to an explicit clip duration, aligns the save filter with the chosen container, re-renders copy and re-encode controls when the mode changes, and reports a queued result only after the trusted queue returns a valid job identity.
 

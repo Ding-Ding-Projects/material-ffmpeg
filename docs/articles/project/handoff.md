@@ -1,5 +1,11 @@
 # Handoff
 
+## Archive UI and current publication
+
+The authoritative archive is `wire-in.zip`, SHA-256 `80ac159b9a110795dd04e5c8052fc4dbfda9eddeac0dd437ef2cebb5f0d30d89`. It has 12 entries and matches `design/source/` byte for byte. Do not replace it with a visually similar implementation; preserve its interface and make changes through trusted wiring.
+
+The focused context-menu repair is packaged-runtime verified. Its search field measured 172 px beside a 32 px regex control; direct hit testing reached Duplicate, the duplicate tab appeared, and the menu dismissed. Verified baseline release [v0.1.502-r1](https://github.com/Ding-Ding-Projects/material-ffmpeg/releases/tag/v0.1.502-r1) targets commit `aeec0e4460ac4ab27d7e9e49ab5f9478692a4871`. Workflow run [32511984489](https://github.com/Ding-Ding-Projects/material-ffmpeg/actions/runs/32511984489) verified that release baseline and its earlier Pages deployment; the current documentation change requires its own later successful Pages deployment before it is live.
+
 This article explains what a subsequent maintainer should verify before treating the current desktop application as released and operational.
 
 ## Behavior

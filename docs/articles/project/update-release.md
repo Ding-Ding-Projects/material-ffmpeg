@@ -1,5 +1,11 @@
 # Updates and releases
 
+## Verified release baseline
+
+[v0.1.502-r1](https://github.com/Ding-Ding-Projects/material-ffmpeg/releases/tag/v0.1.502-r1) is a non-draft, non-prerelease release targeting commit `aeec0e4460ac4ab27d7e9e49ab5f9478692a4871`. GitHub Actions run [32511984489](https://github.com/Ding-Ding-Projects/material-ffmpeg/actions/runs/32511984489) completed successfully, including the unsigned Squirrel.Windows build, release-asset validation, publication, download verification, build-evidence preservation, and Pages deployment.
+
+The immutable installer URL is [material-ffmpeg-setup-0.1.502.exe](https://github.com/Ding-Ding-Projects/material-ffmpeg/releases/download/v0.1.502-r1/material-ffmpeg-setup-0.1.502.exe). Its published SHA-256 is `e738ddc9f03a4b4ed29135168427440766b1114e98916e04eb2623d11a56e5e7`. The installer remains intentionally unsigned and may trigger an unknown-publisher or SmartScreen warning.
+
 Every push and manual dispatch runs the direct `Build, release, and deploy Pages` workflow.
 
 ## Behavior

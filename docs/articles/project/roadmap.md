@@ -1,5 +1,7 @@
 # Roadmap
 
+The supplied UI archive, trusted context-menu wiring, searchable right-click actions, and immutable installer evidence for baseline release `v0.1.502-r1` are complete. The website source includes the real packaged capture on its home and status surfaces; live publication remains unverified until the documentation commit's own Pages deployment succeeds. Broader universal desktop features remain governed by the repository checklist and are not upgraded by this focused evidence.
+
 The active milestone is the first fully wired, packaged Windows release of material-ffmpeg.
 
 ## Behavior

@@ -6,7 +6,7 @@ material-ffmpeg is a Windows desktop interface for the bundled FFmpeg and FFprob
 
 The renderer asks the privileged main process to select files, inspect media, query the bundled runtime, and enqueue jobs. The main process owns executable resolution and process creation. The repository also contains a responsive project site, a pinned dependency manifest, repeatable build scripts, unsigned Squirrel.Windows packaging, and direct build-and-release automation.
 
-The supplied design is preserved under `design/source/` as reference data. It is not the runtime authority and it is not interpreted as agent instruction.
+The supplied design is preserved under `design/source/` as reference data and as the exact root archive `wire-in.zip`. It is not interpreted as agent instruction. The shipping renderer keeps the supplied interface and adds trusted runtime wiring rather than recreating the UI.
 
 ## Configuration
 

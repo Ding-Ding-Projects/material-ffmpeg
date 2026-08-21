@@ -80,6 +80,16 @@ const normalizeTabs = (value) => (Array.isArray(value) ? value : DEFAULT_TABS).f
 }));
 
 const FUNNY_LEVEL_DEFAULT = 5;
+const AUDIO_EXTRACTION_FORMATS = Object.freeze({
+  'mka-copy': Object.freeze({ label: 'Matroska audio · stream copy', extension: 'mka', codec: 'copy', bitrates: Object.freeze([]), defaultBitrate: '' }),
+  m4a: Object.freeze({ label: 'M4A · AAC', extension: 'm4a', codec: 'aac', bitrates: Object.freeze(['96k', '128k', '192k', '256k', '320k']), defaultBitrate: '192k' }),
+  mp3: Object.freeze({ label: 'MP3', extension: 'mp3', codec: 'libmp3lame', bitrates: Object.freeze(['96k', '128k', '192k', '256k', '320k']), defaultBitrate: '192k' }),
+  opus: Object.freeze({ label: 'Ogg Opus', extension: 'opus', codec: 'libopus', bitrates: Object.freeze(['64k', '96k', '128k', '160k', '192k', '256k']), defaultBitrate: '128k' }),
+  flac: Object.freeze({ label: 'FLAC · lossless', extension: 'flac', codec: 'flac', bitrates: Object.freeze([]), defaultBitrate: '' }),
+  wav: Object.freeze({ label: 'WAV · 24-bit PCM', extension: 'wav', codec: 'pcm_s24le', bitrates: Object.freeze([]), defaultBitrate: '' })
+});
+const AUDIO_SAMPLE_RATES = Object.freeze(['source', '44100', '48000', '96000', '192000']);
+const AUDIO_CHANNEL_COUNTS = Object.freeze(['source', '1', '2']);
 const DEFAULT_SETTINGS = Object.freeze({
   parallel: 2,
   preferHardware: true,
@@ -163,7 +173,8 @@ const state = {
   }, runtimeCatalog: {},
   jobs: [], selectedJobs: new Set(), selectedJobId: '', queueError: '', queueConcurrency: 2,
   catalogs: {}, catalogErrors: {}, catalogLoading: {}, catalogMeta: {}, catalogQueries: {}, catalogRequestEpoch: {},
-  inputs: {}, outputs: {}, probe: null, probeError: '', probeExportError: '', probeExportFormat: '', audioStreams: [],
+  inputs: {}, outputs: {}, probe: null, probeError: '', probeExportError: '', probeExportFormat: '',
+  audioProbeError: '', audioStreams: [], audioInspecting: false, audioInspectionRequest: 0,
   filters: normalizeFilters(store.get('filters', [{ kind: 'video', name: 'scale', options: { width: 1920, height: -2, flags: 'lanczos' } }])), selectedFilter: 0,
   presets: store.get('presets', []), converterFiles: [], tabs: normalizeTabs(store.get('tabs', DEFAULT_TABS)),
   notifications: store.get('notifications', []),
@@ -174,6 +185,7 @@ const state = {
     trimStart: '00:00:00.000', trimEnd: '', trimDuration: '00:00:10.000', trimMode: 'copy', trimContainer: 'mp4', avoidNegative: true,
     trimVideoCodec: 'libx264', trimAudioCodec: 'aac', trimCrf: 20, trimPreset: 'medium',
     loudness: -16, lra: 11, truePeak: -1.5, loudnormCodec: 'flac', audioCodec: 'copy', audioStream: '0:a:0',
+    audioFormat: 'mka-copy', audioBitrate: '192k', audioSampleRate: 'source', audioChannels: 'source',
     gifStart: '00:00:00.000', gifDuration: '00:00:05.000', gifFps: 15, gifWidth: 640, gifHeight: -2,
     gifScaler: 'lanczos', gifColors: 128, gifStatsMode: 'full', gifDither: 'sierra2_4a', gifBayerScale: 2, gifLoop: 0,
     thumbTime: '00:00:00.000', thumbFormat: 'jpg', thumbWidth: 1280, thumbHeight: -2, thumbScaler: 'lanczos', thumbQuality: 2,
@@ -189,6 +201,15 @@ const state = {
 // by older versions before rendering the first view.
 state.form.streamTarget = '';
 if (!Object.hasOwn(COMPOSER_FORMATS, state.form.composerFormat)) state.form.composerFormat = 'mp4';
+
+const normalizeAudioExtractionState = () => {
+  if (!AUDIO_EXTRACTION_FORMATS[state.form.audioFormat]) state.form.audioFormat = 'mka-copy';
+  const format = AUDIO_EXTRACTION_FORMATS[state.form.audioFormat];
+  if (format.bitrates.length && !format.bitrates.includes(String(state.form.audioBitrate))) state.form.audioBitrate = format.defaultBitrate;
+  if (!AUDIO_SAMPLE_RATES.includes(String(state.form.audioSampleRate))) state.form.audioSampleRate = 'source';
+  if (!AUDIO_CHANNEL_COUNTS.includes(String(state.form.audioChannels))) state.form.audioChannels = 'source';
+};
+normalizeAudioExtractionState();
 
 const saveUi = () => {
   store.set('theme', state.theme); store.set('logo', state.logo); store.set('tabs', state.tabs);
@@ -322,14 +343,28 @@ const selectedTrimContainer = () => {
   return TRIM_CONTAINERS.has(container) ? container : 'mp4';
 };
 const composerOutputDefinition = () => COMPOSER_FORMATS[state.form.composerFormat] || COMPOSER_FORMATS.mp4;
+const audioExtractionFormat = () => AUDIO_EXTRACTION_FORMATS[state.form.audioFormat] || AUDIO_EXTRACTION_FORMATS['mka-copy'];
+const audioExtractionStreamOptions = () => state.audioStreams.map((stream) => {
+  const facts = [stream.codec ? stream.codec.toUpperCase() : 'unknown codec'];
+  if (stream.channels) facts.push(`${stream.channels} channel${stream.channels === 1 ? '' : 's'}`);
+  if (stream.sampleRate) facts.push(`${stream.sampleRate} Hz`);
+  if (stream.language) facts.push(stream.language);
+  return [stream.id, `${stream.id} · ${facts.join(' · ')}`];
+});
+const validatedAudioChoice = (value, choices, label) => {
+  const text = String(value ?? '');
+  if (!choices.includes(text)) throw new Error(`${label} must be selected from the available choices.`);
+  return text;
+};
 const outputOptions = (slot) => {
   const selectedInput = state.inputs[slot];
+  const extractionFormat = audioExtractionFormat();
   const definitions = {
     convert: { extension: state.form.container, label: state.form.container.toUpperCase() },
     trim: { extension: selectedTrimContainer(), label: `${selectedTrimContainer().toUpperCase()} media` },
     filters: { extension: 'mp4', label: 'MP4 video' },
     'audio-normalize': { extension: state.form.loudnormCodec === 'aac' ? 'm4a' : state.form.loudnormCodec === 'libopus' ? 'opus' : state.form.loudnormCodec.startsWith('pcm_') ? 'wav' : state.form.loudnormCodec, label: 'Normalized audio' },
-    'audio-extract': { extension: state.form.audioCodec === 'aac' ? 'm4a' : state.form.audioCodec === 'libopus' ? 'opus' : state.form.audioCodec.startsWith('pcm_') ? 'wav' : state.form.audioCodec === 'copy' ? (selectedInput?.name?.split('.').pop()?.toLowerCase() || 'mka') : state.form.audioCodec, label: 'Extracted audio' },
+    'audio-extract': { extension: extractionFormat.extension, label: extractionFormat.label },
     gif: { extension: 'gif', label: 'GIF image' },
     thumbs: state.form.thumbFormat === 'png' ? { extension: 'png', label: 'PNG image' } : { extension: 'jpg', label: 'JPEG image' },
     streaming: { extension: 'm3u8', label: 'HLS playlist' },
@@ -517,10 +552,25 @@ const filtergraphValues = () => {
     preset: hasVideo ? state.form.preset : undefined
   };
 };
-const extractValues = () => ({
-  input: state.inputs.audio?.handle,
-  streams: [{ selector: state.form.audioStream, output: requireExtension(state.outputs['audio-extract'], [outputOptions('audio-extract').filters[0].extensions[0]], 'extracted audio output').handle, codec: state.form.audioCodec }]
-});
+const extractValues = () => {
+  if (!state.inputs.audio) throw new Error('Choose an input file before extracting audio.');
+  if (state.audioInspecting) throw new Error('Wait for audio stream inspection to finish.');
+  if (state.audioProbeError) throw new Error(state.audioProbeError);
+  if (!state.audioStreams.length) throw new Error('The selected input has no detected audio streams.');
+  const stream = state.audioStreams.find((entry) => entry.id === state.form.audioStream);
+  if (!stream) throw new Error('Choose one of the detected audio streams.');
+  const format = audioExtractionFormat();
+  const output = requireExtension(state.outputs['audio-extract'], [format.extension], 'extracted audio output');
+  const definition = { selector: stream.id, output: output.handle, codec: format.codec };
+  if (format.codec !== 'copy') {
+    if (format.bitrates.length) definition.bitrate = validatedAudioChoice(state.form.audioBitrate, format.bitrates, 'Audio bitrate');
+    const sampleRate = validatedAudioChoice(state.form.audioSampleRate, AUDIO_SAMPLE_RATES, 'Sample rate');
+    const channels = validatedAudioChoice(state.form.audioChannels, AUDIO_CHANNEL_COUNTS, 'Channel count');
+    if (sampleRate !== 'source') definition.sampleRate = Number(sampleRate);
+    if (channels !== 'source') definition.channels = Number(channels);
+  }
+  return { input: state.inputs.audio.handle, streams: [definition] };
+};
 const gifValues = () => ({
   input: state.inputs.gif?.handle,
   output: requireExtension(state.outputs.gif, ['gif'], 'GIF output').handle,
@@ -742,6 +792,7 @@ const filterChain = (kind, label) => {
   const chain = entries.length ? entries.map(({ node, index }) => `<button type="button" class="node${index === state.selectedFilter ? ' sel' : ''}" data-filter-index="${index}"><b>${esc(filterDefinition(node.kind, node.name)?.label || node.name)}</b><br><small>${esc(filterNodeSummary(node))}</small></button>`).join('<span class="ms" aria-hidden="true">east</span>') : '<div class="empty-state">No nodes in this chain.</div>';
   return `<section class="filter-lane" aria-label="${esc(label)}"><div class="filter-lane-head"><h3>${esc(label)}</h3><span>${entries.length} ordered node${entries.length === 1 ? '' : 's'}</span></div><div class="filter-chain">${chain}</div></section>`;
 };
+const selectOptions = (id, options, selected, extra = '') => `<select id="${id}" ${extra}>${options.map(([value, label]) => `<option value="${esc(value)}"${String(value) === String(selected) ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
 const pageHead = (eyebrow, title, description, actions = '') => `<div class="page-head"><div><p class="eyebrow">${esc(eyebrow)}</p><h1>${esc(title)}</h1><p class="lede">${esc(description)}</p></div><div class="head-actions">${actions}</div></div>`;
 const displayFile = (file, empty) => file ? esc(displayText(file.name, file.kind === 'output' ? 'output file' : 'input file')) : `<span class="hint">${esc(empty)}</span>`;
 const pickerCard = (slot, label, output = false) => `<div class="list-item"><span class="ms">${output ? 'output' : 'movie'}</span><span style="flex:1;min-width:0"><b>${esc(label)}</b><br><small class="mono">${displayFile(output ? state.outputs[slot] : state.inputs[slot], output ? 'Choose an output destination' : 'Choose an input file')}</small></span><button class="tonal ${output ? 'pick-output' : 'pick-input'}" data-slot="${slot}">${output ? 'Choose' : 'Browse'}</button></div>`;
@@ -836,10 +887,29 @@ const VIEWS = {
       <div class="card span5"><h2>Selected node</h2>${editor}<p class="hint">Only the listed filters and guided option ranges are accepted. Video and audio nodes keep their own visible order and compile into separate chains.</p><h3>Command preview</h3><pre class="cmd-pre">${esc(workflowPreview('filtergraph',filtergraphValues))}</pre></div></div>`;
   },
 
-  audio: () => `${pageHead('Audio', 'Extraction & loudness', 'Inspect real streams, normalize with measured loudness, or extract one selected stream.', '')}
-    <div class="grid"><div class="card span6"><h2>Two-pass loudness</h2><div class="list">${pickerCard('audio','Input')}${pickerCard('audio-normalize','Normalized output',true)}</div>
-      <div class="two-col" style="margin-top:14px">${field('Integrated loudness (LUFS)', input('audio-lufs',state.form.loudness,'number','min="-70" max="-5" step="0.1"'))}${field('Loudness range',input('audio-lra',state.form.lra,'number','min="1" max="50" step="0.1"'))}${field('True peak (dBTP)',input('audio-tp',state.form.truePeak,'number','min="-9" max="0" step="0.1"'))}${field('Normalized output codec',select('loudnorm-codec',['flac','aac','libopus','pcm_s24le'],state.form.loudnormCodec))}</div><button class="filled" id="queue-loudnorm">Queue measured two-pass normalization</button><p class="hint">${Object.keys(state.loudnormPending).length ? `${Object.keys(state.loudnormPending).length} pass 1 job${Object.keys(state.loudnormPending).length === 1 ? ' is' : 's are'} waiting for a confirmed result.` : 'Pass 2 is queued only after pass 1 completes with bounded loudnorm measurements. Restarted workflows stop visibly if their trusted selections are no longer available.'}</p><pre class="cmd-pre">${esc(workflowPreview('loudnorm', () => loudnormAnalysisSpec(loudnormValues())))}</pre></div>
-    <div class="card span6"><h2>Extract stream</h2><div class="list">${pickerCard('audio-extract','Extracted output',true)}</div>${field('Stream', select('audio-stream', state.audioStreams.length ? state.audioStreams.map((s) => s.id) : ['0:a:0'], state.form.audioStream))}${field('Output codec',select('audio-codec',['copy','flac','aac','libopus','pcm_s24le'],state.form.audioCodec))}<button class="filled" id="queue-extract">Queue extraction</button><p class="hint">Streams are populated from the selected file's real ffprobe result. Stream copy keeps the encoded bytes and does not apply filters.</p></div></div>`,
+  audio: () => {
+    const format = audioExtractionFormat();
+    const streamOptions = audioExtractionStreamOptions();
+    const inspectionState = !state.inputs.audio
+      ? '<p class="notice">Choose an input file to inspect its real audio streams.</p>'
+      : state.audioInspecting
+        ? '<p class="notice">Inspecting audio streams with the bundled FFprobe runtime…</p>'
+        : state.audioProbeError
+          ? `<p class="notice error"><b>Audio inspection failed.</b><br>${esc(displayText(state.audioProbeError, 'runtime detail'))}</p>`
+          : streamOptions.length
+            ? `<p class="notice">Detected ${streamOptions.length} audio stream${streamOptions.length === 1 ? '' : 's'}. Choose exactly one for this extraction job.</p>`
+            : '<p class="notice error"><b>No audio streams detected.</b><br>Choose a media file that contains an audio stream.</p>';
+    const bitrateControl = format.bitrates.length
+      ? field('Audio bitrate', selectOptions('audio-bitrate', format.bitrates.map((value) => [value, value]), format.bitrates.includes(state.form.audioBitrate) ? state.form.audioBitrate : format.defaultBitrate))
+      : '';
+    const transformControls = format.codec === 'copy'
+      ? '<p class="hint">Stream copy keeps the encoded audio unchanged. Bitrate, sample-rate, and channel conversion are unavailable in this mode.</p>'
+      : `<div class="two-col">${bitrateControl}${field('Sample rate',selectOptions('audio-sample-rate',AUDIO_SAMPLE_RATES.map((value) => [value,value === 'source' ? 'Keep source rate' : `${value} Hz`]),state.form.audioSampleRate))}${field('Channels',selectOptions('audio-channels',AUDIO_CHANNEL_COUNTS.map((value) => [value,value === 'source' ? 'Keep source layout' : value === '1' ? 'Mono' : 'Stereo']),state.form.audioChannels))}</div>`;
+    return `${pageHead('Audio', 'Extraction & loudness', 'Inspect real streams, normalize with measured loudness, or extract one selected stream.', '')}
+      <div class="grid"><div class="card span6"><h2>Two-pass loudness</h2><div class="list">${pickerCard('audio','Input')}${pickerCard('audio-normalize','Normalized output',true)}</div>
+        <div class="two-col" style="margin-top:14px">${field('Integrated loudness (LUFS)', input('audio-lufs',state.form.loudness,'number','min="-70" max="-5" step="0.1"'))}${field('Loudness range',input('audio-lra',state.form.lra,'number','min="1" max="50" step="0.1"'))}${field('True peak (dBTP)',input('audio-tp',state.form.truePeak,'number','min="-9" max="0" step="0.1"'))}${field('Normalized output codec',select('loudnorm-codec',['flac','aac','libopus','pcm_s24le'],state.form.loudnormCodec))}</div><button class="filled" id="queue-loudnorm">Queue measured two-pass normalization</button><p class="hint">${Object.keys(state.loudnormPending).length ? `${Object.keys(state.loudnormPending).length} pass 1 job${Object.keys(state.loudnormPending).length === 1 ? ' is' : 's are'} waiting for a confirmed result.` : 'Pass 2 is queued only after pass 1 completes with bounded loudnorm measurements. Restarted workflows stop visibly if their trusted selections are no longer available.'}</p><pre class="cmd-pre">${esc(workflowPreview('loudnorm', () => loudnormAnalysisSpec(loudnormValues())))}</pre></div>
+      <div class="card span6"><h2>Extract stream</h2><div class="list">${pickerCard('audio','Input')}${pickerCard('audio-extract','Extracted output',true)}</div>${inspectionState}${field('Stream',selectOptions('audio-stream',streamOptions.length ? streamOptions : [['','No detected audio streams']],state.form.audioStream,streamOptions.length ? '' : 'disabled'))}${field('Output format',selectOptions('audio-format',Object.entries(AUDIO_EXTRACTION_FORMATS).map(([value,definition]) => [value,definition.label]),state.form.audioFormat))}${transformControls}<button class="filled" id="queue-extract">Queue extraction</button><p class="hint">The output path comes from a native save dialog. The renderer submits only opaque selected-file handles and a bounded argument vector to the trusted queue.</p></div></div>`;
+  },
 
   gif: () => `${pageHead('Stills & loops', 'GIF & thumbnails', 'Queue a bounded palette-based GIF or one exact timestamped still through the trusted job queue.', '')}<div class="grid">
     <div class="card span6"><h2>GIF export</h2><div class="list">${pickerCard('gif','Input')}${pickerCard('gif','GIF output',true)}</div><div class="two-col">
@@ -1260,7 +1330,18 @@ function wireView() {
   $$('#palette-open,#palette-open-2').forEach((button) => button.onclick = openPalette);
   $$('.pick-input').forEach((button) => button.onclick = async () => { const files = await pickFile(button.dataset.slot, { multiple: false, purpose: button.dataset.slot }); if (files.length && ['audio','inspector'].includes(button.dataset.slot)) inspectSelected(button.dataset.slot); });
   $$('.pick-output').forEach((button) => button.onclick = () => chooseOutput(button.dataset.slot, Object.assign({ purpose: button.dataset.slot }, outputOptions(button.dataset.slot))));
-  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-container','trimContainer'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-codec','audioCodec'],['audio-stream','audioStream'],['gif-start','gifStart'],['gif-duration','gifDuration'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-height','gifHeight',true],['gif-scaler','gifScaler'],['gif-colors','gifColors',true],['gif-stats','gifStatsMode'],['gif-dither','gifDither'],['gif-bayer-scale','gifBayerScale',true],['gif-loop','gifLoop',true],['thumb-time','thumbTime'],['thumb-width','thumbWidth',true],['thumb-height','thumbHeight',true],['thumb-scaler','thumbScaler'],['thumb-quality','thumbQuality',true],['stream-target','streamTarget'],['stream-video-bitrate','streamVideoBitrate'],['stream-audio-bitrate','streamAudioBitrate'],['stream-resolution','streamResolution'],['stream-fps','streamFps'],['stream-gop','streamGop',true],['hls-time','hlsTime',true],['hls-list','hlsList',true],['hls-playlist-type','hlsPlaylistType'],['hls-segment-type','hlsSegmentType'],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
+  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-container','trimContainer'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-stream','audioStream'],['audio-bitrate','audioBitrate'],['audio-sample-rate','audioSampleRate'],['audio-channels','audioChannels'],['gif-start','gifStart'],['gif-duration','gifDuration'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-height','gifHeight',true],['gif-scaler','gifScaler'],['gif-colors','gifColors',true],['gif-stats','gifStatsMode'],['gif-dither','gifDither'],['gif-bayer-scale','gifBayerScale',true],['gif-loop','gifLoop',true],['thumb-time','thumbTime'],['thumb-width','thumbWidth',true],['thumb-height','thumbHeight',true],['thumb-scaler','thumbScaler'],['thumb-quality','thumbQuality',true],['stream-target','streamTarget'],['stream-video-bitrate','streamVideoBitrate'],['stream-audio-bitrate','streamAudioBitrate'],['stream-resolution','streamResolution'],['stream-fps','streamFps'],['stream-gop','streamGop',true],['hls-time','hlsTime',true],['hls-list','hlsList',true],['hls-playlist-type','hlsPlaylistType'],['hls-segment-type','hlsSegmentType'],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
+  const audioFormat = $('#audio-format'); if (audioFormat) audioFormat.onchange = () => {
+    const priorExtension = audioExtractionFormat().extension;
+    state.form.audioFormat = AUDIO_EXTRACTION_FORMATS[audioFormat.value] ? audioFormat.value : 'mka-copy';
+    normalizeAudioExtractionState();
+    const nextExtension = audioExtractionFormat().extension;
+    if (state.outputs['audio-extract'] && priorExtension !== nextExtension) {
+      delete state.outputs['audio-extract'];
+      notify('Choose a new extraction destination', `The output format changed to .${nextExtension}, so the prior destination was cleared.`);
+    }
+    saveUi(); render();
+  };
   const gifDither = $('#gif-dither'); if (gifDither) gifDither.onchange = () => { state.form.gifDither = gifDither.value; saveUi(); render(); };
   const thumbnailFormat = $('#thumb-format'); if (thumbnailFormat) thumbnailFormat.onchange = () => {
     state.form.thumbFormat = thumbnailFormat.value === 'png' ? 'png' : 'jpg';
@@ -1363,13 +1444,43 @@ function savePreset() {
 
 async function inspectSelected(slot) {
   const file = state.inputs[slot]; if (!file) return notify('Choose a file','A real input is required before inspection.','error');
-  state.probe = null; state.probeError = ''; state.probeExportError = ''; render();
+  const request = ++state.audioInspectionRequest;
+  if (slot === 'audio') {
+    state.audioProbeError = '';
+    state.audioInspecting = true;
+    state.audioStreams = [];
+    render();
+  } else {
+    state.probe = null;
+    state.probeError = '';
+    state.probeExportError = '';
+    render();
+  }
   try {
-    const result = await apiCall('probe.inspect', file.handle); state.probe = result;
+    const result = await apiCall('probe.inspect', file.handle);
+    if (request !== state.audioInspectionRequest || state.inputs[slot]?.handle !== file.handle) return;
     const streams = Array.isArray(result?.streams) ? result.streams : [];
-    state.audioStreams = streams.filter((stream) => stream.codec_type === 'audio').slice(0,128).map((stream,index) => ({ id: stream.specifier || `0:a:${index}`, codec: stream.codec_name || '' }));
-  } catch (error) { state.probe = null; state.probeError = error.message; }
-  render();
+    if (slot === 'audio') {
+      state.audioStreams = streams.filter((stream) => stream.codec_type === 'audio').slice(0,128).map((stream,index) => ({
+        id: stream.specifier || `0:a:${index}`,
+        codec: bounded(stream.codec_name || '', 40),
+        channels: Number.isInteger(Number(stream.channels)) ? clamp(Number(stream.channels), 1, 32) : 0,
+        sampleRate: /^\d{1,6}$/u.test(String(stream.sample_rate || '')) ? Number(stream.sample_rate) : 0,
+        language: bounded(stream.tags?.language || '', 24)
+      }));
+      if (!state.audioStreams.length) state.audioProbeError = 'The selected input contains no detected audio streams.';
+      else if (!state.audioStreams.some((stream) => stream.id === state.form.audioStream)) state.form.audioStream = state.audioStreams[0].id;
+    } else state.probe = result;
+  } catch (error) {
+    if (request !== state.audioInspectionRequest || state.inputs[slot]?.handle !== file.handle) return;
+    if (slot === 'audio') state.audioProbeError = error.message;
+    else { state.probe = null; state.probeError = error.message; }
+  } finally {
+    if (request === state.audioInspectionRequest) {
+      if (slot === 'audio') state.audioInspecting = false;
+      render();
+    }
+  }
 }
 async function exportProbe(format) {
   if (!state.probe || !state.inputs.inspector) return notify('Nothing to export','Inspect a file first.','error');

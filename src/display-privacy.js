@@ -7,11 +7,15 @@
   const BARE_LOCAL_REFERENCE = /\bfile:(?:(?:\/\/\/[a-z]:[\\/])|(?:\/[a-z]:[\\/])|(?:\/\/[^\/\\\s<>"'`]+[\\/]))[^\s<>"'`]*|\b[a-z]:[\\/][^\s<>"'`]*|\\\\[^\/\\\s<>"'`]+[\\/][^\/\\\s<>"'`]+(?:[\\/][^\s<>"'`]*)?/gi;
   const SAFE_FILE_BASENAME = /^(?:(?:ffmpeg|ffprobe)(?:[-_.][a-z0-9]+)*|(?:input|output|media|audio|video|image|frame|frames|thumbnail|preview|stream|playlist|manifest|segment|capture|export|converted|result|report|log|temp|tmp|file)(?:[-_.][a-z0-9]+)*)\.[a-z0-9]{1,10}$/i;
   const TRAILING_PUNCTUATION = /[),.;}\]]+$/;
+  const MAX_DISPLAY_DEPTH = 8;
+  const MAX_DISPLAY_ITEMS = 500;
 
   const ROLE_LABELS = Object.freeze({
     input: 'local input',
+    inputfile: 'local input',
     source: 'local input',
     output: 'local output',
+    outputfile: 'local output',
     destination: 'local output',
     target: 'local output',
     executable: 'bundled runtime',
@@ -23,15 +27,26 @@
     cwd: 'local folder',
     workingdirectory: 'local folder',
     file: 'local file',
+    filename: 'local file',
+    selectedfile: 'local file',
+    inspectedfile: 'local file',
+    jobfile: 'local file',
+    filedetail: 'local file',
     path: 'local path',
     log: 'local path',
-    error: 'local path'
+    error: 'local path',
+    joberror: 'local path',
+    notificationdetail: 'local path',
+    inspectionerror: 'local path',
+    inventoryerror: 'local path',
+    commanddetail: 'local path',
+    runtimedetail: 'bundled runtime'
   });
 
-  const roleLabel = (role) => {
-    const key = String(role || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    return ROLE_LABELS[key] || 'local item';
-  };
+  const roleKey = (role) => String(role || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const roleLabel = (role) => ROLE_LABELS[roleKey(role)] || 'local item';
+  const neutralLabel = (role) => `[${roleLabel(role)}]`;
+  const nestedRole = (key, parentRole) => ROLE_LABELS[roleKey(key)] ? key : parentRole;
 
   const safeBasename = (reference) => {
     const isFileUrl = /^file:/i.test(reference);
@@ -89,7 +104,39 @@
     return output + sanitizeLocalReferences(text.slice(cursor), role);
   };
 
-  const displayValue = (value, role) => typeof value === 'string' ? displayText(value, role) : value;
+  const copyDisplayValue = (value, role, context, depth) => {
+    if (typeof value === 'string') return displayText(value, role);
+    if (!value || typeof value !== 'object') return value;
+
+    const isArray = Array.isArray(value);
+    const isPlainObject = !isArray && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+    if (!isArray && !isPlainObject) return value;
+    if (depth >= MAX_DISPLAY_DEPTH || context.seen.has(value)) return neutralLabel(role);
+
+    const entries = isArray ? value : Object.entries(value);
+    if (entries.length > context.remaining) return neutralLabel(role);
+
+    context.remaining -= entries.length;
+    context.seen.add(value);
+    let copy;
+
+    if (isArray) {
+      copy = entries.map((entry) => copyDisplayValue(entry, role, context, depth + 1));
+    } else {
+      copy = Object.fromEntries(entries.map(([key, entry]) => [
+        key,
+        copyDisplayValue(entry, nestedRole(key, role), context, depth + 1)
+      ]));
+    }
+
+    context.seen.delete(value);
+    return copy;
+  };
+
+  const displayValue = (value, role) => copyDisplayValue(value, role, {
+    remaining: MAX_DISPLAY_ITEMS,
+    seen: new WeakSet()
+  }, 0);
 
   const api = Object.freeze({ displayText, displayValue });
   Object.defineProperty(root, 'DisplayPrivacy', {

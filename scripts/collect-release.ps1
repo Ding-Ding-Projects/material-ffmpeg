@@ -4,6 +4,7 @@ param([switch]$Silent)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'hash.ps1')
+. (Join-Path $PSScriptRoot 'pe-signature.ps1')
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $outputRoot = Join-Path $repoRoot 'dist\squirrel-windows'
 $releaseRoot = Join-Path $repoRoot 'dist\release-assets'
@@ -18,8 +19,7 @@ if ($null -eq $setup -or $null -eq $releases -or $null -eq $fullPackage) {
   throw "Squirrel output is incomplete under $outputRoot. Expected Setup.exe, RELEASES, and a full .nupkg."
 }
 if ($setup.Length -le 0 -or $releases.Length -le 0 -or $fullPackage.Length -le 0) { throw 'One or more Squirrel outputs are empty.' }
-$signature = Get-AuthenticodeSignature -LiteralPath $setup.FullName
-if ($signature.Status -ne 'NotSigned') { throw "Permanent unsigned policy violation: setup signature status is $($signature.Status)." }
+Assert-PeUnsigned -LiteralPath $setup.FullName
 $releaseText = Get-Content -LiteralPath $releases.FullName -Raw
 if ($releaseText -notmatch [regex]::Escape($fullPackage.Name)) { throw "RELEASES does not reference $($fullPackage.Name)." }
 

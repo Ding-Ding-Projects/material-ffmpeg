@@ -45,7 +45,7 @@
       }
     ],
     "directories": {
-      "output": "dist/squirrel-windows"
+      "output": "dist"
     },
     "win": {
       "target": "squirrel",
@@ -55,6 +55,7 @@
     },
     "squirrelWindows": {
       "artifactName": "material-ffmpeg-setup-${version}.exe",
+      "iconUrl": "https://raw.githubusercontent.com/Ding-Ding-Projects/material-ffmpeg/main/resources/app-icon.ico",
       "msi": false
     }
   }

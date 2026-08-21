@@ -19,7 +19,7 @@ try {
 } finally { Pop-Location }
 
 Write-Host '[build] Phase 3/3: verifying the runnable package.'
-$packageRoot = Join-Path $repoRoot 'dist\squirrel-windows\win-unpacked'
+$packageRoot = Join-Path $repoRoot 'dist\win-unpacked'
 $executable = Join-Path $packageRoot 'material-ffmpeg.exe'
 $required = @(
   $executable,

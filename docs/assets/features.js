@@ -1228,6 +1228,13 @@
       sha: '949d0f7506745dffabae5bb7648929a091a4b146',
     },
     {
+      version: 'Trusted batch converter',
+      date: '2026-08-21',
+      category: 'Application',
+      text: 'Wired bounded multi-file inspection, one-folder output planning, no-overwrite commands, and exact partial queue results.',
+      sha: '033a28ef48e30fccc6ce4908288ab2e6db435b78',
+    },
+    {
       version: 'Unsigned packaging verification',
       date: '2026-08-21',
       category: 'Packaging',

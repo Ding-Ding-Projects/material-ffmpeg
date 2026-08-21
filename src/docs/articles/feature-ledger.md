@@ -16,7 +16,7 @@ This ledger describes the installed desktop application and distinguishes source
 | Thumbnails | Source-wired | Not verified in this pass | Builder and destination flow are present. |
 | HLS, RTMP, and SRT streaming | Source-wired | Not verified in this pass | Guided encoding controls, HLS selected-handle derivatives, mode-matched URLs, session-only target handling, and queue submission are present. |
 | Command composer | Source-wired | Not verified in this pass | Dedicated structured IPC rebuilds bounded arguments from live selected handles; executable, shell, path-bearing, and implicit-output input is blocked. |
-| Batch converter | Source-wired | Not verified in this pass | Eight media adapters are currently mapped. |
+| Batch converter | Source-wired at `033a28e` | Not verified in this pass | Eight media adapters use trusted multi-file selection, bounded inspection, compatible-target state, one output-folder choice, no-overwrite argv, and honest partial outcomes. |
 | Inspector and probe export | Source-wired | Not verified in this pass | Retains the bounded FFprobe JSON snapshot and exports JSON or documented row-per-node CSV/XML through a native save destination. |
 | Runtime catalogs and help | Source-wired | Not verified in this pass | Data is queried from the bundled build. |
 | Durable job queue | Source-wired | Not verified in this pass | Persistence, progress, logs, pause/resume/cancel/reorder/clear are implemented. |

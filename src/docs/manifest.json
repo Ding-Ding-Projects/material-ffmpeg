@@ -95,15 +95,15 @@
       "summary": "Guided FFmpeg workflows, FFprobe inspection, and bounded runtime option help.",
       "sourcePath": "docs/articles/project/conversion-inspector-catalog.md",
       "bundlePath": "articles/conversion-inspector-catalog.md",
-      "bytes": 3150,
-      "sha256": "e6b42a52b70d625aeeb9a12781920b7ef38317153823fca8ba82e81a9cf44531",
+      "bytes": 9704,
+      "sha256": "4a1fc30504d4a2de8cd36fdddad44ab918397b85f2bd773abf5806886555acc1",
       "related": [
         "architecture-runtime",
         "jobs-queue-commands",
         "privacy-security"
       ],
-      "sourceBytes": 3187,
-      "sourceSha256": "11dbfed3aa0c478f50f85e9f053c393c976e257b0d0914291227d40600fc4c0c"
+      "sourceBytes": 11167,
+      "sourceSha256": "63cf2db0539ec6b177085b6fa5da828b3ca58a291dbd6b37367436ae3677d913"
     },
     {
       "id": "design-provenance",
@@ -129,16 +129,16 @@
       "summary": "A factual list of implemented, pending, working, and not-yet-verified behavior.",
       "sourcePath": "docs/articles/project/feature-ledger.md",
       "bundlePath": "articles/feature-ledger.md",
-      "bytes": 6773,
-      "sha256": "91ca44a99c4effd0eb30ff32569a1aff6ce5724af6c1af25232832243040be32",
+      "bytes": 7444,
+      "sha256": "a50ac364df999bc1009b1045a4cfa5cf2d409594e7d9a534630bf06b85d99624",
       "related": [
         "project-overview",
         "handoff",
         "privacy-security",
         "build-install-dependencies"
       ],
-      "sourceBytes": 6838,
-      "sourceSha256": "e890c5ee5f2641321c2e7e2c520e7c34db3ac95c1dbbe43bbb265bab1a48151d"
+      "sourceBytes": 11812,
+      "sourceSha256": "e31c28ef43988494d4b94af66c01cfaa074a03ec01e56140b3ce8a223468b6fd"
     },
     {
       "id": "handoff",

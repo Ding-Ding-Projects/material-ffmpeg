@@ -31,7 +31,7 @@ The current interaction evidence belongs to source commit `5358582f13b6af418e58c
 | HLS output | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
 | RTMP and SRT transport | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
 | Command composer | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
-| Batch converter | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
+| Batch converter | Source-wired at `033a28e` and unrun | Trusted 64-file selection, four-at-a-time FFprobe inspection, target compatibility, one-folder output planning, no-overwrite argv, and partial queue results are present; no exact-commit interaction receipt was produced. |
 | Queue pause, resume, cancel, reorder, and clear | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
 | Runtime catalog kinds other than codecs | Unrun | Only the codecs catalog was interacted with in this pass. |
 | Component help | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
@@ -60,7 +60,7 @@ The current interaction evidence belongs to source commit `5358582f13b6af418e58c
 | HLS, RTMP, and SRT streaming | Source-wired | Unrun | Guided encoding controls, HLS selected-handle derivatives, mode-matched URLs, session-only target handling, and queue submission are present. |
 | RTMP and SRT transport | Source-wired | Unrun | Transport builders are packaged; no exact-commit interaction receipt was produced. |
 | Command composer | Source-wired | Unrun | Dedicated structured IPC rebuilds bounded arguments from live selected handles; executable, shell, path-bearing, and implicit-output input is blocked. |
-| Batch converter | Source-wired | Unrun | Eight media adapters are currently mapped. |
+| Batch converter | Source-wired at `033a28e` | Unrun | Eight media adapters use trusted multi-file selection, bounded inspection, compatible-target state, one output-folder choice, no-overwrite argv, and honest partial outcomes. |
 | Inspector and probe export | Source-wired | Inspector working; snapshot exports unrun | Real H.264 320x180 and AAC input was inspected. JSON preserves the bounded snapshot; CSV and XML use the documented row-per-node schema through a trusted output handle. None of the three exports were interacted with. |
 | Runtime catalogs and help | Source-wired | Codecs working; other kinds and help unrun | The live codecs catalog returned 539 entries. |
 | Durable job queue | Source-wired | Completion/logs working; controls unrun | Persistence, progress, logs, pause/resume/cancel/reorder/clear are implemented. |

@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "id": "ffmpeg-gui-interactions-5358582",
+  "sourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+  "route": "lowlevel-computer-use-cheap",
+  "artifactSha256": "95d1b2349891d01e17fa1bcc5e9b24bf7a87f9f8c6aa915b8bc6ab838df7052a",
+  "artifactSigned": false,
+  "bundledRuntime": {
+    "ffmpeg": "9.0.1",
+    "ffprobe": "9.0.1"
+  },
+  "interactionReceiptSha256": "1f4cc1d7bcbffac6398aed2ffa74eae8e3b1a827c0d65bb04dcc127d03a6759f",
+  "interactionScope": {
+    "convert": {
+      "nativeInputSelection": true,
+      "nativeOutputSelection": true,
+      "structuredArguments": true,
+      "queueCompleted": true,
+      "frames": 90,
+      "speed": "5.7x",
+      "output": {
+        "sha256": "33f49f27e529277271940cfee7d7a244844eb11266d248d6f43895a6285bbe60",
+        "bytes": 1470093,
+        "video": "H.264 1920x1080",
+        "audio": "AAC 48 kHz mono",
+        "durationSeconds": 3
+      }
+    },
+    "inspector": {
+      "video": "H.264 320x180",
+      "audio": "AAC 48 kHz mono",
+      "durationSeconds": 3
+    },
+    "codecs": {
+      "liveEntries": 539
+    }
+  },
+  "captureGaps": [
+    {
+      "screen": "convert",
+      "state": "real-job-completed",
+      "status": "unpromoted",
+      "blocker": "blocked-by-privacy",
+      "reason": "The raw capture rendered a machine-local path and is not safe for public promotion."
+    },
+    {
+      "screen": "inspector",
+      "state": "real-media-probed",
+      "status": "unpromoted",
+      "blocker": "blocked-by-privacy",
+      "reason": "The raw capture rendered a machine-local path and is not safe for public promotion."
+    }
+  ],
+  "limitations": [
+    "The interaction facts do not replace public capture evidence for the two quarantined states.",
+    "No tests, lint, static analysis, accessibility checks, or installer execution ran in this evidence update.",
+    "Workflows and controls without an exact interaction receipt remain unrun or not integrated."
+  ]
+}

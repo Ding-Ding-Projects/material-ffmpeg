@@ -9,6 +9,28 @@
     "titleField": "title",
     "rule": "Every indexed root document and generated feature article requires its own real deployed-page capture receipt. A missing index, route, article, or capture fails verification."
   },
+  "releaseEvidence": {
+    "sourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+    "runId": 32460503357,
+    "runUrl": "https://github.com/Ding-Ding-Projects/material-ffmpeg/actions/runs/32460503357",
+    "workflow": "Build, release, and deploy Pages",
+    "conclusion": "success",
+    "releaseTag": "v0.1.22-r1",
+    "releaseUrl": "https://github.com/Ding-Ding-Projects/material-ffmpeg/releases/tag/v0.1.22-r1",
+    "draft": false,
+    "prerelease": false,
+    "assets": [
+      {"name":"material-ffmpeg-0.1.22-full.nupkg","bytes":283980475,"sha256":"5c45faa9a956f1f52a9b775b18da3b479307150e4549264936356fa038bbf875"},
+      {"name":"material-ffmpeg-setup-0.1.22.exe","bytes":283296256,"sha256":"015854da242d4efcb48ab824c504f203cbc2bbcaa44c01247a57181dfa8e1497"},
+      {"name":"RELEASES","bytes":87,"sha256":"3ff4f43376a35f7e873a4a3edf8f93cb3939861244dc87ec66efe2a1ad7d0770"},
+      {"name":"SHA256SUMS.txt","bytes":277,"sha256":"032a423f9d204569717008575a21cc1b982cd6f98a2c2ba57e6afdebad35b76c"}
+    ],
+    "limitations": [
+      "The release asset inventory does not contain the separately required dim-sum image.",
+      "The workflow intentionally ran no tests, lint, static analysis, accessibility checks, or screenshots.",
+      "Release publication evidence is independent of the UI capture and interaction evidence."
+    ]
+  },
   "states": [
     {"id":"app-overview-ready","target":"packaged-app","view":"overview","viewport":[1440,900],"requiredText":["FFmpeg","Overview"]},
     {"id":"app-overview-missing-runtime","target":"packaged-app","view":"overview","viewport":[1440,900],"fixture":"bundled-runtime-unavailable","requiredText":["FFmpeg"]},
@@ -51,5 +73,92 @@
     {"id":"site-adhd-one-thing","target":"deployed-pages","view":"attention-one-thing","viewport":[390,844],"requiredText":["One thing at a time"]},
     {"id":"site-adhd-momentum","target":"deployed-pages","view":"attention-momentum","viewport":[390,844],"requiredText":["Not now"]},
     {"id":"site-open-graph-preview","target":"deployed-pages","view":"server-rendered-link-preview","viewport":[1200,630],"requiredText":["material-ffmpeg"]}
+  ],
+  "records": [
+    {
+      "id": "ffmpeg-gui-overview-5358582",
+      "active": true,
+      "path": "docs/captures/5358582/overview.png",
+      "sourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+      "artifactSha256": "95d1b2349891d01e17fa1bcc5e9b24bf7a87f9f8c6aa915b8bc6ab838df7052a",
+      "captureSha256": "0e175c4bddff7edd4b8bdb00793c7a00da9d1f4e5e85bfb64309faef6ac6105a",
+      "screen": "overview",
+      "state": "bundled-runtime-ready",
+      "theme": "dark",
+      "viewportWidth": 2160,
+      "viewportHeight": 1350,
+      "scale": 1,
+      "interactionProofId": "packaged-overview-runtime",
+      "interactionReceiptSha256": "1f4cc1d7bcbffac6398aed2ffa74eae8e3b1a827c0d65bb04dcc127d03a6759f",
+      "inspectionStatus": "inspected",
+      "publicReceiptPath": "docs/verification/receipts/5358582/overview.json",
+      "limitation": "Shows bundled runtime status and rendered chrome; it does not prove every workflow action."
+    },
+    {
+      "id": "ffmpeg-gui-convert-ready-5358582",
+      "active": true,
+      "path": "docs/captures/5358582/convert-ready.png",
+      "sourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+      "artifactSha256": "95d1b2349891d01e17fa1bcc5e9b24bf7a87f9f8c6aa915b8bc6ab838df7052a",
+      "captureSha256": "07b8b88324c15f2642fbf3d68464fef8c789e4805abb6cf7068a2d1bf3ced5e3",
+      "screen": "convert",
+      "state": "real-input-output-ready",
+      "theme": "dark",
+      "viewportWidth": 2160,
+      "viewportHeight": 1350,
+      "scale": 1,
+      "interactionProofId": "convert-native-dialog-to-completed-output",
+      "interactionReceiptSha256": "1f4cc1d7bcbffac6398aed2ffa74eae8e3b1a827c0d65bb04dcc127d03a6759f",
+      "inspectionStatus": "inspected",
+      "publicReceiptPath": "docs/verification/receipts/5358582/convert-ready.json",
+      "limitation": "Shows a real prepared conversion and structured preview; completion is documented separately in the path-redacted interaction receipt."
+    },
+    {
+      "id": "ffmpeg-gui-codecs-5358582",
+      "active": true,
+      "path": "docs/captures/5358582/codecs.png",
+      "sourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+      "artifactSha256": "95d1b2349891d01e17fa1bcc5e9b24bf7a87f9f8c6aa915b8bc6ab838df7052a",
+      "captureSha256": "a8e0c78b09205c42f067d33047149b8b45c8f852b2d2fdfbad48ecdccc0b6772",
+      "screen": "codecs",
+      "state": "live-runtime-catalog",
+      "theme": "dark",
+      "viewportWidth": 2160,
+      "viewportHeight": 1350,
+      "scale": 1,
+      "interactionProofId": "live-codecs-catalog",
+      "interactionReceiptSha256": "1f4cc1d7bcbffac6398aed2ffa74eae8e3b1a827c0d65bb04dcc127d03a6759f",
+      "inspectionStatus": "inspected",
+      "publicReceiptPath": "docs/verification/receipts/5358582/codecs.json",
+      "limitation": "Proves the codecs catalog only; other catalog kinds and component help were not interacted with."
+    }
+  ],
+  "captureGaps": [
+    {
+      "id": "ffmpeg-gui-convert-completed-5358582",
+      "sourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+      "artifactSha256": "95d1b2349891d01e17fa1bcc5e9b24bf7a87f9f8c6aa915b8bc6ab838df7052a",
+      "screen": "convert",
+      "state": "real-job-completed",
+      "interactionProofId": "conversion-output-validation",
+      "interactionReceiptSha256": "1f4cc1d7bcbffac6398aed2ffa74eae8e3b1a827c0d65bb04dcc127d03a6759f",
+      "publicReceiptPath": "docs/verification/receipts/5358582/interaction-summary.json",
+      "captureStatus": "unpromoted",
+      "blocker": "blocked-by-privacy",
+      "reason": "The raw capture rendered a machine-local path and is not safe for public promotion."
+    },
+    {
+      "id": "ffmpeg-gui-inspector-5358582",
+      "sourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+      "artifactSha256": "95d1b2349891d01e17fa1bcc5e9b24bf7a87f9f8c6aa915b8bc6ab838df7052a",
+      "screen": "inspector",
+      "state": "real-media-probed",
+      "interactionProofId": "inspector-real-input",
+      "interactionReceiptSha256": "1f4cc1d7bcbffac6398aed2ffa74eae8e3b1a827c0d65bb04dcc127d03a6759f",
+      "publicReceiptPath": "docs/verification/receipts/5358582/interaction-summary.json",
+      "captureStatus": "unpromoted",
+      "blocker": "blocked-by-privacy",
+      "reason": "The raw capture rendered a machine-local path and is not safe for public promotion."
+    }
   ]
 }

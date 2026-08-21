@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ffmpeg-gui-codecs-5358582",
+  "sourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+  "route": "lowlevel-computer-use-cheap",
+  "artifactSha256": "95d1b2349891d01e17fa1bcc5e9b24bf7a87f9f8c6aa915b8bc6ab838df7052a",
+  "artifactSigned": false,
+  "capturePath": "docs/captures/5358582/codecs.png",
+  "captureSha256": "a8e0c78b09205c42f067d33047149b8b45c8f852b2d2fdfbad48ecdccc0b6772",
+  "capturedAt": "2026-08-21T08:07:12.707Z",
+  "dimensions": { "width": 2160, "height": 1350, "scale": 1 },
+  "theme": "dark",
+  "screen": "codecs",
+  "state": "live-runtime-catalog",
+  "interactionProofId": "live-codecs-catalog",
+  "interactionReceiptSha256": "1f4cc1d7bcbffac6398aed2ffa74eae8e3b1a827c0d65bb04dcc127d03a6759f",
+  "inspectionStatus": "inspected",
+  "privacy": { "visibleDesktopUntouched": true, "expectedSurfaceOnly": true, "sensitiveDataReviewed": true },
+  "proves": ["539 live codec entries returned by the bundled FFmpeg 9.0.1 runtime"],
+  "doesNotProve": ["other catalog kinds", "component help", "release publication"]
+}

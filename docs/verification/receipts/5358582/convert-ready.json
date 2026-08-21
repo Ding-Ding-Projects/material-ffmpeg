@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ffmpeg-gui-convert-ready-5358582",
+  "sourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+  "route": "lowlevel-computer-use-cheap",
+  "artifactSha256": "95d1b2349891d01e17fa1bcc5e9b24bf7a87f9f8c6aa915b8bc6ab838df7052a",
+  "artifactSigned": false,
+  "capturePath": "docs/captures/5358582/convert-ready.png",
+  "captureSha256": "07b8b88324c15f2642fbf3d68464fef8c789e4805abb6cf7068a2d1bf3ced5e3",
+  "capturedAt": "2026-08-21T08:04:06.321Z",
+  "dimensions": { "width": 2160, "height": 1350, "scale": 1 },
+  "theme": "dark",
+  "screen": "convert",
+  "state": "real-input-output-ready",
+  "interactionProofId": "convert-native-dialog-to-completed-output",
+  "interactionReceiptSha256": "1f4cc1d7bcbffac6398aed2ffa74eae8e3b1a827c0d65bb04dcc127d03a6759f",
+  "inspectionStatus": "inspected",
+  "privacy": { "visibleDesktopUntouched": true, "expectedSurfaceOnly": true, "sensitiveDataReviewed": true },
+  "proves": ["native input selection", "native output selection", "structured command preview"],
+  "doesNotProve": ["job completion by itself", "other workflow builders", "release publication"]
+}

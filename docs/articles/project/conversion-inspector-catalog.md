@@ -30,7 +30,15 @@ Inputs and export destinations are opaque handles created by native dialogs. Cat
 
 ## Verification state
 
-Source inspection confirms the runtime-derived routes and their bounds. No actual media probe, catalog enumeration, help lookup, or export was run in this documentation-only pass.
+At source commit `5358582f13b6af418e58c1971747b270d308f34b`, the packaged application used native file dialogs to select a real H.264/AAC input and output, displayed its structured FFmpeg argument preview, completed the job through the trusted runtime queue, and validated a 1,470,093-byte output. Independent FFprobe inspection found H.264 at 1920×1080, AAC at 48 kHz mono, and a 3.000-second duration.
+
+The packaged inspector rendered structured metadata for a separate real H.264 320×180 and AAC 48 kHz input. The codecs view loaded 539 live entries from the bundled FFmpeg 9.0.1 runtime. Component help, JSON/CSV/XML export, non-codec catalog kinds, and the other workflow builders were not interacted with in this run and remain unrun rather than inferred working.
+
+![Convert workflow with real input and output selected and structured command preview](../../captures/5358582/convert-ready.png)
+
+![Live codecs catalog showing entries returned by the bundled FFmpeg runtime](../../captures/5358582/codecs.png)
+
+The completed-conversion and Inspector interactions are retained in a path-redacted receipt. Their raw captures are quarantined rather than published because the rendered interface exposed machine-local paths. Public replacement captures remain a documented gap.
 
 ## Suggested articles
 

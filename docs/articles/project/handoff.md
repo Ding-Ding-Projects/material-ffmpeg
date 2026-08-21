@@ -30,7 +30,9 @@ Never place credentials, tokens, selected local paths, media contents, or privat
 
 ## Verification state
 
-The prior speed handoff explicitly recorded no lint, tests, accessibility checks, screenshots, package build, or installer execution. This repair performed source inspection and directly invoked the previously packaged flat-layout FFmpeg and FFprobe binaries, both of which reported version 9.0.1. It did not build a new package, interact with the packaged application, or take a screenshot. The release candidate, packaged runtime interaction, and public assets require independent verification at the final integrated commit.
+At exact commit `5358582f13b6af418e58c1971747b270d308f34b`, the packaged application resolved bundled FFmpeg and FFprobe 9.0.1, completed and independently validated one real H.264/AAC conversion, inspected real media through FFprobe, and loaded 539 live codec entries. Three privacy-reviewed exact-byte captures were promoted with validated receipts. The completed-conversion and Inspector interactions remain verified through a path-redacted receipt, while their raw images are quarantined because the rendered interface exposed machine-local paths. [GitHub Actions run 32460503357](https://github.com/Ding-Ding-Projects/material-ffmpeg/actions/runs/32460503357) completed successfully and published [v0.1.22-r1](https://github.com/Ding-Ding-Projects/material-ffmpeg/releases/tag/v0.1.22-r1) for the same commit.
+
+No tests, lint, static analysis, accessibility checks, or installer execution ran in this pass. The release asset list also lacks the separately required dim-sum image. Every workflow and universal feature without an exact interaction receipt remains unrun or not integrated in the feature ledger.
 
 ## Suggested articles
 

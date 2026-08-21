@@ -12,11 +12,13 @@
 
 ## Verification boundary
 
-This speed pass intentionally did not run tests, lint, reviews, accessibility checks, screenshots, a package build, or installer execution. The scripts and workflow contain file, version, checksum, package-content, commit, and unsigned-state assertions; those assertions become evidence only when the corresponding build completes successfully. The trusted-runtime path diagnostic is integrated into `src/runtime/safe-process.js`. Direct invocation of the previously packaged flat-layout FFmpeg and FFprobe binaries reported version 9.0.1; no new package build, application interaction, or capture is claimed by this repair.
+Exact commit `5358582f13b6af418e58c1971747b270d308f34b` was packaged and exercised on a named off-screen desktop through `lowlevel-computer-use-cheap`. The packaged application resolved bundled FFmpeg and FFprobe 9.0.1, completed and independently validated one real H.264/AAC conversion, inspected real media through FFprobe, and loaded a 539-entry live codecs catalog. Three privacy-reviewed captures and their active receipt records are under `docs/captures/5358582/` and `docs/verification/`. The completed-conversion and Inspector captures are quarantined because their rendered pixels expose machine-local paths; path-redacted receipts preserve the verified interaction facts without publishing those images.
 
-## Latest release attempt
+This pass intentionally ran no tests, lint, static analysis, accessibility checks, or installer execution. Trim, Filtergraph, audio extraction, two-pass loudness normalization, GIF, thumbnails, HLS, RTMP/SRT, Composer, batch conversion, additional queue controls, other catalog kinds, component help, and JSON/CSV/XML export remain unrun rather than inferred working. The offline documentation and Ollama desktop bridges plus the broader universal feature contract remain incomplete.
 
-GitHub Actions run `32456646436` (commit `b4a69531e66549b8fff7d0a2b7249611deb157e7`, 2026-08-21) built and collected the unsigned release assets, then failed in `Write measured release notes` with `Error formatting a string: Format specifier was invalid.` The release-publication, release-verification, and Pages jobs were skipped, so no release or published installer was produced by this run.
+## Latest release result
+
+[GitHub Actions run `32460503357`](https://github.com/Ding-Ding-Projects/material-ffmpeg/actions/runs/32460503357) completed successfully at exact commit `5358582f13b6af418e58c1971747b270d308f34b`. It published [v0.1.22-r1](https://github.com/Ding-Ding-Projects/material-ffmpeg/releases/tag/v0.1.22-r1) as a non-draft, non-prerelease release and deployed Pages. The release has the setup executable, `RELEASES`, full `.nupkg`, and `SHA256SUMS.txt`, but its current asset inventory lacks the separately required dim-sum image.
 
 ## Expected release assets
 
@@ -25,4 +27,4 @@ GitHub Actions run `32456646436` (commit `b4a69531e66549b8fff7d0a2b7249611deb157
 - `material-ffmpeg-<version>-full.nupkg`
 - `SHA256SUMS.txt`
 
-Build the integrated trusted-runtime repair against its exact commit and use the terminal workflow evidence as the release verdict. Packaged application interaction remains required before treating the visible runtime status as verified.
+Use the exact-commit capture and interaction receipts as the current packaged GUI evidence. Preserve unrun and not-integrated rows in the feature ledger until they receive their own exact-commit interaction receipts. Repair the missing dim-sum release asset before treating the broader release contract as complete.

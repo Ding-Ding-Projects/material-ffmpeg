@@ -133,6 +133,11 @@
     if (/^\d+(?:\.\d{1,9})?$/u.test(result)) return result;
     const match = /^(\d{1,6}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$/u.exec(result);
     if (!match || Number(match[2]) > 59 || Number(match[3]) > 59) fail(field, 'must be seconds or HH:MM:SS[.fraction]');
+    // Keep the textual form and validate it against the same ten-year bound as
+    // numeric times. Without this check a six-digit hour value could bypass the
+    // bound and make ffmpeg accept an effectively unbounded seek or duration.
+    const seconds = (Number(match[1]) * 3600) + (Number(match[2]) * 60) + Number(match[3]) + (match[4] ? Number(`0.${match[4]}`) : 0);
+    if (!Number.isFinite(seconds) || seconds > 315360000) fail(field, 'must be at most 315360000 seconds');
     return result;
   }
 
@@ -201,6 +206,7 @@
     const output = outputPath(spec.output, 'output', false);
     const videoCodec = codec(spec.videoCodec, 'libx264', VIDEO_CODECS, 'videoCodec', true);
     const audioCodec = codec(spec.audioCodec, 'aac', AUDIO_CODECS, 'audioCodec', true);
+    if (videoCodec === 'none' && audioCodec === 'none') fail('codecs', 'at least one output stream must be enabled');
     const args = commonArgs(spec);
     const hwaccel = enumValue(spec.hwaccel, 'none', new Set(['none', 'auto', 'cuda', 'qsv', 'd3d11va', 'dxva2', 'vulkan']), 'hwaccel');
     if (hwaccel !== 'none') args.push('-hwaccel', hwaccel);
@@ -301,6 +307,7 @@
     addMaps(args, spec.maps);
     const videoCodec = codec(spec.videoCodec, 'libx264', VIDEO_CODECS, 'videoCodec', true);
     const audioCodec = codec(spec.audioCodec, 'aac', AUDIO_CODECS, 'audioCodec', true);
+    if (videoCodec === 'none' && audioCodec === 'none') fail('codecs', 'at least one output stream must be enabled');
     if (videoCodec === 'copy' && (spec.videoGraph !== undefined || spec.complexGraph !== undefined)) fail('videoCodec', 'cannot copy video while applying a video or complex filtergraph');
     if (audioCodec === 'copy' && (spec.audioGraph !== undefined || spec.complexGraph !== undefined)) fail('audioCodec', 'cannot copy audio while applying an audio or complex filtergraph');
     if (videoCodec === 'none') args.push('-vn');
@@ -362,6 +369,7 @@
     args.push('-map', streamSelector(spec.stream, '0:a:0', 'stream'), '-vn', '-sn', '-dn');
     args.push('-af', loudnormFilter(spec, phase === 'apply' ? spec.measurements : null, 'summary'));
     const audioCodec = codec(spec.audioCodec, 'aac', AUDIO_CODECS, 'audioCodec', false);
+    if (audioCodec === 'copy') fail('audioCodec', 'cannot use stream copy while applying loudnorm');
     args.push('-c:a', audioCodec);
     if (spec.audioBitrate !== undefined && audioCodec !== 'copy') args.push('-b:a', bitrate(spec.audioBitrate, undefined, 'audioBitrate'));
     if (spec.sampleRate !== undefined) args.push('-ar', String(number(spec.sampleRate, undefined, 8000, 384000, 'sampleRate', true)));

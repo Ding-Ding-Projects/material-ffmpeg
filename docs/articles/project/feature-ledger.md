@@ -25,7 +25,7 @@ The current interaction evidence belongs to source commit `5358582f13b6af418e58c
 | Trim | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
 | Filtergraph | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
 | Audio extraction | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
-| Two-pass loudness normalization | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
+| Two-pass loudness normalization | Unrun | Source now validates trusted selections and targets, persists a bounded pass-1 handoff, reconciles terminal queue state, extracts bounded measurements, and idempotently queues pass 2; no exact-commit interaction receipt was produced. |
 | GIF creation | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
 | Thumbnail generation | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
 | HLS output | Unrun | Packaged route exists; no exact-commit interaction receipt was produced. |
@@ -54,7 +54,7 @@ The current interaction evidence belongs to source commit `5358582f13b6af418e58c
 | Convert | Source-wired | Working at `5358582` | A real H.264/AAC output completed through structured arguments and bundled FFmpeg. |
 | Trim | Source-wired | Unrun | Copy and re-encode modes use typed builders. |
 | Filtergraph | Source-wired | Unrun | Video, audio, or complex graph validation is present. |
-| Audio processing | Source-wired | Unrun | Includes audio extraction and two-pass loudness normalization controls. |
+| Audio processing | Source-wired | Unrun | Audio extraction remains separate. Two-pass normalization now requires confirmed pass-1 completion and bounded measured values before queuing pass 2. |
 | GIF creation | Source-wired | Unrun | Palette/fps/dither controls are present. |
 | Thumbnails | Source-wired | Unrun | Builder and destination flow are present. |
 | HLS, RTMP, and SRT streaming | Source-wired | Unrun | Guided encoding controls, HLS selected-handle derivatives, mode-matched URLs, session-only target handling, and queue submission are present. |

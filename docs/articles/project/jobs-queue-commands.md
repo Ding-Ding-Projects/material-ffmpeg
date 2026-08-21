@@ -10,13 +10,15 @@ The queue accepts validated job specifications, runs up to the configured concur
 
 Completed file-producing jobs are considered successful only when every expected output exists, is a file, and has nonzero size.
 
+The two-pass loudness workflow validates the selected input/output handle kinds, output extension, audio stream, codec, and target ranges before it queues analysis. A dedicated trusted IPC operation retains only those two already-selected handles for the registry's existing 24-hour maximum so a long analysis can reach pass 2 without exposing either path. Pass 1 writes bounded `loudnorm` JSON into the ordinary job log. Pass 2 is queued only after the analysis job reports `completed` with exit code zero and the renderer extracts all five required finite measurements inside the command builder's accepted ranges. Its deterministic pass-2 label prevents a recovered completion event from creating a duplicate output job.
+
 ## Configuration
 
 Runtime concurrency defaults to two and is clamped to one through four by `JobManager`. The Settings control applies that value through a trusted IPC method, and the scheduler immediately re-evaluates queued work without interrupting jobs already in progress. The queue retains at most 1,000 jobs, 500 terminal history records, 500 log lines per job, and 4,000 characters per log line. Cancellation first writes `q` to FFmpeg and uses a bounded forced termination fallback.
 
 ## Failure modes
 
-A handle expires when the application process restarts because the registry is intentionally in memory. Invalid or wrong-kind handles are rejected. Queue state that is oversized, malformed, or from an unsupported schema is quarantined. Pause/resume can fail when the process is no longer active or the Windows process-state helper fails. A zero-byte or missing output converts an otherwise zero FFmpeg exit into a failed job.
+A handle expires when the application process restarts because the registry is intentionally in memory. Invalid or wrong-kind handles are rejected. The loudness coordinator keeps a bounded, versioned local record of analysis job ids and opaque selections so a renderer reload can reconcile against the durable queue; it never stores an absolute media path. A full application restart invalidates those opaque selections, so the coordinator cancels a stale active analysis when possible and never starts its pass 2. That condition, or a pass 1 that is failed, cancelled, interrupted, cleared, missing, malformed, or lacks valid measurements, removes the pending handoff and shows an error that asks the user to reselect the files. Queue state that is oversized, malformed, or from an unsupported schema is quarantined. Pause/resume can fail when the process is no longer active or the Windows process-state helper fails. A zero-byte or missing output converts an otherwise zero FFmpeg exit into a failed job.
 
 ## Security considerations
 
@@ -24,7 +26,7 @@ Only native-dialog-selected absolute paths enter the registry. Persisted job dat
 
 ## Verification state
 
-The implementation and bounds are present in source. No live queue, restart recovery, pause/resume, cancellation, or output-validation operation was executed during this documentation pass.
+The implementation and bounds are present in source. No live loudness pass, queue, restart recovery, pause/resume, cancellation, or output-validation operation was executed during this documentation pass.
 
 ## Command construction
 

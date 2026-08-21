@@ -11,7 +11,7 @@ This ledger describes the installed desktop application and distinguishes source
 | Convert | Source-wired | Not verified in this pass | Guided H.264/H.265/AV1/VP9/copy controls and queue action. |
 | Trim | Source-wired | Not verified in this pass | Copy and re-encode modes use typed builders. |
 | Filtergraph | Source-wired | Not verified in this pass | Video, audio, or complex graph validation is present. |
-| Audio processing | Source-wired | Not verified in this pass | Includes loudness and audio workflow controls. |
+| Audio processing | Source-wired | Not verified in this pass | Audio extraction remains separate. Two-pass normalization validates opaque selections and target ranges, reconciles persisted analysis state, and queues pass 2 only from confirmed bounded measurements. |
 | GIF creation | Source-wired | Not verified in this pass | Palette/fps/dither controls are present. |
 | Thumbnails | Source-wired | Not verified in this pass | Builder and destination flow are present. |
 | HLS, RTMP, and SRT streaming | Source-wired | Not verified in this pass | Guided encoding controls, HLS selected-handle derivatives, mode-matched URLs, session-only target handling, and queue submission are present. |

@@ -14,6 +14,25 @@ const displayText = (value, role = 'local file') => displayPrivacy.displayText(v
 const displayValue = (value, role = 'local file') => displayPrivacy.displayValue(value, role);
 const HANDLE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
 const DERIVED_OUTPUT_MARKER = '__DERIVED_OUTPUT__';
+const LOUDNORM_PENDING_KEY = 'material-ffmpeg.loudnorm-pending';
+const LOUDNORM_PENDING_VERSION = 1;
+const LOUDNORM_MAX_PENDING = 32;
+const LOUDNORM_MAX_STORED_BYTES = 64 * 1024;
+const LOUDNORM_MAX_LOG_LINES = 500;
+const LOUDNORM_MAX_LOG_CHARS = 200000;
+const LOUDNORM_CODECS = new Set(['flac', 'aac', 'libopus', 'pcm_s24le']);
+const LOUDNORM_TERMINAL_STATUSES = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
+const loudnormEnqueueing = new Set();
+const loudnormSessionId = (() => {
+  const key = 'material-ffmpeg.loudnorm-session';
+  try {
+    const existing = sessionStorage.getItem(key);
+    if (existing && HANDLE_RE.test(existing)) return existing;
+    const created = crypto.randomUUID();
+    sessionStorage.setItem(key, created);
+    return created;
+  } catch (_) { return crypto.randomUUID(); }
+})();
 const store = {
   get(key, fallback) { try { return JSON.parse(localStorage.getItem(`material-ffmpeg.${key}`)) ?? fallback; } catch { return fallback; } },
   set(key, value) { try { localStorage.setItem(`material-ffmpeg.${key}`, JSON.stringify(value)); } catch { } }
@@ -82,7 +101,7 @@ const state = {
   presets: store.get('presets', []), converterFiles: [], tabs: normalizeTabs(store.get('tabs', DEFAULT_TABS)),
   notifications: store.get('notifications', []),
   settings: normalizeSettings(store.get('settings', {})),
-  loudnormPending: {},
+  loudnormPending: {}, loudnormRecoveryNotice: '', loudnormRecoveryPending: false,
   form: Object.assign({
     codec: 'libx264', container: 'mp4', crf: 20, preset: 'medium', tune: 'none', width: 1920, height: -2, fps: '',
     trimStart: '00:00:00.000', trimEnd: '', trimDuration: '00:00:10.000', trimMode: 'copy', trimContainer: 'mp4', avoidNegative: true,
@@ -207,8 +226,8 @@ function build(kind, values) {
   return argv.slice(0, 512).map((arg) => bounded(arg, 4096));
 }
 const allFiles = () => [...Object.values(state.inputs), ...Object.values(state.outputs), ...state.converterFiles].filter(Boolean);
-const runtimeArgs = (argv) => {
-  const handles = new Map(allFiles().map((file) => [file.handle, file]));
+const runtimeArgs = (argv, selectedFiles = allFiles()) => {
+  const handles = new Map(selectedFiles.map((file) => [file.handle, file]));
   return argv.map((arg) => {
     const derived = splitDerivedOutput(arg);
     if (derived) {
@@ -259,6 +278,126 @@ const requireTrimSelection = (file, kind, label) => {
   }
   return file;
 };
+const loudnormTarget = (value, minimum, maximum, label) => {
+  if (value === '' || value === null || value === undefined) throw new Error(`${label} is required.`);
+  const result = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(result) || result < minimum || result > maximum) {
+    throw new Error(`${label} must be a finite number from ${minimum} through ${maximum}.`);
+  }
+  return result;
+};
+const loudnormSelection = (file, kind, label) => {
+  if (!file || file.kind !== kind || !HANDLE_RE.test(String(file.handle || ''))) {
+    throw new Error(`Choose a valid ${label} ${kind === 'input' ? 'file' : 'destination'} first.`);
+  }
+  return { handle: String(file.handle), kind, name: bounded(file.name || label, 240) };
+};
+const loudnormValues = () => {
+  const input = loudnormSelection(state.inputs.audio, 'input', 'audio input');
+  const output = loudnormSelection(
+    requireExtension(state.outputs['audio-normalize'], [outputOptions('audio-normalize').filters[0].extensions[0]], 'normalized audio output'),
+    'output',
+    'normalized audio output'
+  );
+  if (input.handle === output.handle) throw new Error('The normalized output must be a separate selected destination.');
+  const stream = bounded(state.form.audioStream, 24);
+  if (!/^0:a(?::\d{1,4})?\??$/u.test(stream)) throw new Error('Audio stream must select an audio stream from input 0.');
+  const audioCodec = bounded(state.form.loudnormCodec, 24);
+  if (!LOUDNORM_CODECS.has(audioCodec)) throw new Error('Normalized output codec is not supported by this workflow.');
+  return {
+    input,
+    output,
+    stream,
+    integrated: loudnormTarget(state.form.loudness, -70, -5, 'Integrated loudness'),
+    lra: loudnormTarget(state.form.lra, 1, 50, 'Loudness range'),
+    truePeak: loudnormTarget(state.form.truePeak, -9, 0, 'True peak'),
+    audioCodec
+  };
+};
+const loudnormAnalysisSpec = (values) => ({
+  input: values.input.handle,
+  phase: 'analysis',
+  stream: values.stream,
+  integrated: values.integrated,
+  lra: values.lra,
+  truePeak: values.truePeak
+});
+const loudnormLabelPart = (value, fallback) => bounded(value || fallback, 100).replace(/[\0\r\n]/gu, ' ').trim() || fallback;
+const loudnormApplyLabel = (pending) => bounded(`Normalize · ${loudnormLabelPart(pending.output.name, 'audio')} · pass 2 ${pending.analysisJobId.slice(0, 8)}`, 160);
+
+function normalizeLoudnormPendingRecord(candidate) {
+  if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate) || !HANDLE_RE.test(String(candidate.analysisJobId || ''))) {
+    throw new Error('Saved loudness workflow identifier is invalid.');
+  }
+  const input = loudnormSelection(candidate.input, 'input', 'saved audio input');
+  const output = loudnormSelection(candidate.output, 'output', 'saved normalized output');
+  if (input.handle === output.handle) throw new Error('Saved loudness workflow reuses its input as its output.');
+  const stream = bounded(candidate.stream, 24);
+  if (!/^0:a(?::\d{1,4})?\??$/u.test(stream)) throw new Error('Saved loudness workflow stream is invalid.');
+  const audioCodec = bounded(candidate.audioCodec, 24);
+  if (!LOUDNORM_CODECS.has(audioCodec)) throw new Error('Saved loudness workflow codec is invalid.');
+  const createdAt = typeof candidate.createdAt === 'string' && Number.isFinite(Date.parse(candidate.createdAt))
+    ? new Date(candidate.createdAt).toISOString()
+    : new Date().toISOString();
+  if (!HANDLE_RE.test(String(candidate.sessionId || ''))) throw new Error('Saved loudness workflow session is invalid.');
+  return {
+    analysisJobId: String(candidate.analysisJobId),
+    input,
+    output,
+    stream,
+    integrated: loudnormTarget(candidate.integrated, -70, -5, 'Saved integrated loudness'),
+    lra: loudnormTarget(candidate.lra, 1, 50, 'Saved loudness range'),
+    truePeak: loudnormTarget(candidate.truePeak, -9, 0, 'Saved true peak'),
+    audioCodec,
+    createdAt,
+    sessionId: String(candidate.sessionId)
+  };
+}
+
+function restoreLoudnormPending() {
+  const raw = localStorage.getItem(LOUDNORM_PENDING_KEY);
+  if (raw === null) return;
+  let discarded = 0;
+  try {
+    if (raw.length > LOUDNORM_MAX_STORED_BYTES) throw new Error('Saved loudness workflow state exceeds its size limit.');
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.version !== LOUDNORM_PENDING_VERSION || !Array.isArray(parsed.workflows) || parsed.workflows.length > LOUDNORM_MAX_PENDING) {
+      throw new Error('Saved loudness workflow state has an unsupported shape.');
+    }
+    for (const candidate of parsed.workflows) {
+      try {
+        const pending = normalizeLoudnormPendingRecord(candidate);
+        if (state.loudnormPending[pending.analysisJobId]) throw new Error('Saved loudness workflow identifier is duplicated.');
+        state.loudnormPending[pending.analysisJobId] = pending;
+      } catch (_) { discarded += 1; }
+    }
+    state.loudnormRecoveryPending = Object.keys(state.loudnormPending).length > 0;
+    if (discarded) {
+      state.loudnormRecoveryNotice = `${discarded} invalid saved loudness workflow record${discarded === 1 ? ' was' : 's were'} discarded without starting pass 2.`;
+      saveLoudnormPending();
+    }
+  } catch (error) {
+    state.loudnormRecoveryNotice = `${error.message} No saved loudness workflow was resumed.`;
+    state.loudnormPending = {};
+    localStorage.removeItem(LOUDNORM_PENDING_KEY);
+  }
+}
+
+function saveLoudnormPending(required = false) {
+  try {
+    const workflows = Object.values(state.loudnormPending).slice(0, LOUDNORM_MAX_PENDING);
+    if (!workflows.length) {
+      localStorage.removeItem(LOUDNORM_PENDING_KEY);
+      return;
+    }
+    const payload = JSON.stringify({ version: LOUDNORM_PENDING_VERSION, workflows });
+    if (payload.length > LOUDNORM_MAX_STORED_BYTES) throw new Error('Pending loudness workflow state exceeds its storage limit.');
+    localStorage.setItem(LOUDNORM_PENDING_KEY, payload);
+  } catch (error) {
+    if (required) throw error;
+    try { localStorage.removeItem(LOUDNORM_PENDING_KEY); } catch (_) { /* The runtime error notification remains authoritative. */ }
+  }
+}
 const convertValues = () => ({
   input: state.inputs.convert?.handle, output: requireExtension(state.outputs.convert, [state.form.container], 'conversion output').handle,
   videoCodec: state.form.codec, audioCodec: state.form.codec === 'copy' ? 'copy' : 'aac',
@@ -460,7 +599,9 @@ const normalizeJob = (job, index) => {
 async function refreshJobs() {
   try {
     const result = await apiCall('jobs.list');
-    state.jobs = (Array.isArray(result) ? result : result?.jobs || []).slice(0, 1000).map(normalizeJob); render();
+    state.jobs = (Array.isArray(result) ? result : result?.jobs || []).slice(0, 1000).map(normalizeJob);
+    render();
+    await reconcileLoudnormJobs();
   } catch (error) { state.runtime.error = error.message; render(); }
 }
 
@@ -551,7 +692,7 @@ const VIEWS = {
 
   audio: () => `${pageHead('Audio', 'Extraction & loudness', 'Inspect real streams, normalize with measured loudness, or extract one selected stream.', '')}
     <div class="grid"><div class="card span6"><h2>Two-pass loudness</h2><div class="list">${pickerCard('audio','Input')}${pickerCard('audio-normalize','Normalized output',true)}</div>
-      <div class="two-col" style="margin-top:14px">${field('Integrated loudness (LUFS)', input('audio-lufs',state.form.loudness,'number','min="-70" max="-5" step="0.1"'))}${field('Loudness range',input('audio-lra',state.form.lra,'number','min="1" max="50" step="0.1"'))}${field('True peak (dBTP)',input('audio-tp',state.form.truePeak,'number','min="-9" max="0" step="0.1"'))}${field('Normalized output codec',select('loudnorm-codec',['flac','aac','libopus','pcm_s24le'],state.form.loudnormCodec))}</div><button class="filled" id="queue-loudnorm">Queue measured two-pass normalization</button></div>
+      <div class="two-col" style="margin-top:14px">${field('Integrated loudness (LUFS)', input('audio-lufs',state.form.loudness,'number','min="-70" max="-5" step="0.1"'))}${field('Loudness range',input('audio-lra',state.form.lra,'number','min="1" max="50" step="0.1"'))}${field('True peak (dBTP)',input('audio-tp',state.form.truePeak,'number','min="-9" max="0" step="0.1"'))}${field('Normalized output codec',select('loudnorm-codec',['flac','aac','libopus','pcm_s24le'],state.form.loudnormCodec))}</div><button class="filled" id="queue-loudnorm">Queue measured two-pass normalization</button><p class="hint">${Object.keys(state.loudnormPending).length ? `${Object.keys(state.loudnormPending).length} pass 1 job${Object.keys(state.loudnormPending).length === 1 ? ' is' : 's are'} waiting for a confirmed result.` : 'Pass 2 is queued only after pass 1 completes with bounded loudnorm measurements. Restarted workflows stop visibly if their trusted selections are no longer available.'}</p><pre class="cmd-pre">${esc(workflowPreview('loudnorm', () => loudnormAnalysisSpec(loudnormValues())))}</pre></div>
     <div class="card span6"><h2>Extract stream</h2><div class="list">${pickerCard('audio-extract','Extracted output',true)}</div>${field('Stream', select('audio-stream', state.audioStreams.length ? state.audioStreams.map((s) => s.id) : ['0:a:0'], state.form.audioStream))}${field('Output codec',select('audio-codec',['copy','flac','aac','libopus','pcm_s24le'],state.form.audioCodec))}<button class="filled" id="queue-extract">Queue extraction</button><p class="hint">Streams are populated from the selected file's real ffprobe result. Stream copy keeps the encoded bytes and does not apply filters.</p></div></div>`,
 
   gif: () => `${pageHead('Stills & loops', 'GIF & thumbnails', 'Queue a bounded palette-based GIF or one exact timestamped still through the trusted job queue.', '')}<div class="grid">
@@ -679,37 +820,158 @@ function composerValues() {
 async function queueLoudnormAnalysis() {
   try {
     if (!state.runtime.available) throw new Error(state.runtime.error || 'The bundled FFmpeg runtime is unavailable.');
-    const output = requireExtension(state.outputs['audio-normalize'], [outputOptions('audio-normalize').filters[0].extensions[0]], 'normalized audio output');
-    const values = { input: state.inputs.audio?.handle, phase: 'analysis', stream: state.form.audioStream, integrated: state.form.loudness, lra: state.form.lra, truePeak: state.form.truePeak };
-    const argv = build('loudnorm', values), label = `Analyze loudness · ${state.inputs.audio?.name || 'audio'}`;
-    const result = await apiCall('jobs.enqueue', { label, args: runtimeArgs(argv) });
-    const analysis = Array.isArray(result)
-      ? result.filter((job) => job.label === label).sort((a,b) => String(b.createdAt).localeCompare(String(a.createdAt)))[0]
-      : result && typeof result === 'object' ? result : null;
-    if (!analysis?.id) throw new Error('The analysis job was queued without an identifier.');
-    state.loudnormPending[analysis.id] = { input: state.inputs.audio, output, stream: state.form.audioStream, integrated: state.form.loudness, lra: state.form.lra, truePeak: state.form.truePeak, audioCodec: state.form.loudnormCodec };
-    notify('Two-pass normalization started','Pass 1 is measuring the selected stream.'); state.view='jobs'; await refreshJobs();
+    if (Object.keys(state.loudnormPending).length >= LOUDNORM_MAX_PENDING) throw new Error(`At most ${LOUDNORM_MAX_PENDING} two-pass workflows may wait for analysis at once.`);
+    let values = loudnormValues();
+    const retained = await apiCall('loudnorm.retainSelections', { inputHandle: values.input.handle, outputHandle: values.output.handle });
+    values = Object.assign({}, values, {
+      input: loudnormSelection(retained?.input, 'input', 'retained audio input'),
+      output: loudnormSelection(retained?.output, 'output', 'retained normalized output')
+    });
+    const argv = build('loudnorm', loudnormAnalysisSpec(values));
+    const label = bounded(`Analyze loudness · ${loudnormLabelPart(values.input.name, 'audio')}`, 160);
+    const result = await apiCall('jobs.enqueue', { label, args: runtimeArgs(argv, [values.input]) });
+    const analysis = result && typeof result === 'object' && !Array.isArray(result) ? result : null;
+    if (!analysis?.id || !HANDLE_RE.test(String(analysis.id))) throw new Error('The analysis job was queued without a valid identifier.');
+    state.loudnormPending[analysis.id] = normalizeLoudnormPendingRecord({
+      analysisJobId: analysis.id,
+      input: values.input,
+      output: values.output,
+      stream: values.stream,
+      integrated: values.integrated,
+      lra: values.lra,
+      truePeak: values.truePeak,
+      audioCodec: values.audioCodec,
+      createdAt: new Date().toISOString(),
+      sessionId: loudnormSessionId
+    });
+    try {
+      saveLoudnormPending(true);
+    } catch (storageError) {
+      delete state.loudnormPending[analysis.id];
+      let cancellation = 'The queued analysis could not be cancelled automatically.';
+      try {
+        const cancelled = await apiCall('jobs.cancel', String(analysis.id));
+        cancellation = `The analysis job is now ${bounded(cancelled?.status || 'cancelling', 30)}.`;
+      } catch (_) { /* The explicit cancellation limitation is reported below. */ }
+      throw new Error(`Pass 1 was queued but its pass-2 handoff could not be stored: ${storageError.message} ${cancellation}`);
+    }
+    notify('Two-pass normalization started','Pass 1 is measuring the selected stream. Pass 2 waits for confirmed completion and valid measurements.'); state.view='jobs'; await refreshJobs();
   } catch (error) { notify('Could not queue loudness analysis',error.message,'error'); }
 }
 
 function loudnormMeasurements(logs) {
-  const text = (logs || []).join('\n').slice(-200000), candidates = text.match(/\{[^{}]{1,8000}\}/gu) || [];
+  if (!Array.isArray(logs)) throw new Error('Pass 1 did not return a bounded log list.');
+  const selected = logs.slice(-LOUDNORM_MAX_LOG_LINES);
+  const lines = [];
+  let characters = 0;
+  for (let index = selected.length - 1; index >= 0 && characters < LOUDNORM_MAX_LOG_CHARS; index -= 1) {
+    const line = bounded(selected[index], 4000);
+    const remaining = LOUDNORM_MAX_LOG_CHARS - characters;
+    lines.push(line.slice(Math.max(0, line.length - remaining)));
+    characters += Math.min(line.length, remaining) + 1;
+  }
+  const text = lines.reverse().join('\n');
+  const candidates = text.match(/\{[^{}]{1,8000}\}/gu) || [];
+  const fields = [
+    ['input_i', 'inputI', -99, 0],
+    ['input_lra', 'inputLra', 0, 99],
+    ['input_tp', 'inputTp', -99, 99],
+    ['input_thresh', 'inputThresh', -99, 0],
+    ['target_offset', 'targetOffset', -99, 99]
+  ];
   for (let index = candidates.length - 1; index >= 0; index -= 1) {
     try {
       const parsed = JSON.parse(candidates[index]);
-      const measurements = { inputI:Number(parsed.input_i), inputLra:Number(parsed.input_lra), inputTp:Number(parsed.input_tp), inputThresh:Number(parsed.input_thresh), targetOffset:Number(parsed.target_offset) };
-      if (Object.values(measurements).every(Number.isFinite)) return measurements;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+      const measurements = {};
+      for (const [source, target, minimum, maximum] of fields) {
+        if (!Object.prototype.hasOwnProperty.call(parsed, source)) throw new Error(`Missing ${source}.`);
+        const raw = parsed[source];
+        if (typeof raw !== 'number' && (typeof raw !== 'string' || !/^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/iu.test(raw.trim()))) {
+          throw new Error(`Invalid ${source}.`);
+        }
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value < minimum || value > maximum) throw new Error(`Out-of-range ${source}.`);
+        measurements[target] = value;
+      }
+      return measurements;
     } catch { }
   }
   throw new Error('Pass 1 completed without valid bounded loudnorm JSON measurements.');
 }
 
-async function completeLoudnorm(job) {
-  const pending = state.loudnormPending[job.id]; if (!pending || job.status !== 'completed') return;
+async function reconcileLoudnormJob(job, recovered = false) {
+  const pending = state.loudnormPending[job.id];
+  if (!pending || loudnormEnqueueing.has(job.id)) return;
+  if (job.status !== 'completed' || job.exitCode !== 0 || job.error) {
+    if (!LOUDNORM_TERMINAL_STATUSES.has(job.status)) {
+      if (pending.sessionId === loudnormSessionId) {
+        if (recovered) notify('Two-pass workflow restored', `Pass 1 is ${job.status}. Pass 2 will proceed only after confirmed completion.`);
+        return;
+      }
+      let cancellation = 'The stale analysis cancellation request could not be confirmed.';
+      try {
+        const cancelled = await apiCall('jobs.cancel', job.id);
+        cancellation = `The stale analysis job is now ${bounded(cancelled?.status || 'cancelling', 30)}.`;
+      } catch (_) { /* The explicit cancellation limitation is reported below. */ }
+      delete state.loudnormPending[job.id];
+      saveLoudnormPending();
+      notify('Two-pass recovery stopped', `The application restarted, so its opaque selections are no longer valid and pass 2 was not started. ${cancellation}`, 'error');
+      return;
+    }
+    delete state.loudnormPending[job.id];
+    saveLoudnormPending();
+    const detail = job.error || (job.exitCode === null ? `Pass 1 ended as ${job.status}.` : `Pass 1 ended as ${job.status} with exit ${job.exitCode}.`);
+    notify('Two-pass normalization stopped', detail, 'error');
+    return;
+  }
+  if (pending.sessionId !== loudnormSessionId) {
+    delete state.loudnormPending[job.id];
+    saveLoudnormPending();
+    notify('Two-pass recovery stopped', 'Pass 1 completed in an earlier application session, but its opaque selections expired. Pass 2 was not started; reselect the input and output.', 'error');
+    return;
+  }
+  const applyLabel = loudnormApplyLabel(pending);
+  if (state.jobs.some((candidate) => candidate.id !== job.id && candidate.label === applyLabel)) {
+    delete state.loudnormPending[job.id];
+    saveLoudnormPending();
+    notify('Two-pass workflow reconciled', 'The matching pass 2 job already exists, so no duplicate was queued.');
+    return;
+  }
+  loudnormEnqueueing.add(job.id);
   try {
-    const values = { input:pending.input.handle, output:pending.output?.handle, phase:'apply', stream:pending.stream, integrated:pending.integrated, lra:pending.lra, truePeak:pending.truePeak, measurements:loudnormMeasurements(job.logs), audioCodec:pending.audioCodec };
-    const argv = build('loudnorm',values); await apiCall('jobs.enqueue',{label:`Normalize · ${pending.output?.name || 'audio'}`,args:runtimeArgs(argv)}); delete state.loudnormPending[job.id]; notify('Pass 2 queued','Measured loudness values were applied to the output job.'); await refreshJobs();
-  } catch (error) { notify('Two-pass normalization stopped',error.message,'error'); }
+    const values = { input:pending.input.handle, output:pending.output.handle, phase:'apply', stream:pending.stream, integrated:pending.integrated, lra:pending.lra, truePeak:pending.truePeak, measurements:loudnormMeasurements(job.logs), audioCodec:pending.audioCodec };
+    const argv = build('loudnorm', values);
+    const result = await apiCall('jobs.enqueue', { label: applyLabel, args: runtimeArgs(argv, [pending.input, pending.output]) });
+    if (!result || typeof result !== 'object' || Array.isArray(result) || !HANDLE_RE.test(String(result.id || ''))) {
+      throw new Error('Pass 2 was queued without a valid job identifier.');
+    }
+    delete state.loudnormPending[job.id];
+    saveLoudnormPending();
+    notify('Pass 2 queued','Confirmed pass 1 measurements were applied to the normalized output job.');
+    await refreshJobs();
+  } catch (error) {
+    delete state.loudnormPending[job.id];
+    try { saveLoudnormPending(); } catch (_) { /* The visible failure below remains authoritative. */ }
+    notify('Two-pass normalization stopped', `${error.message} Reselect the input and output to start a new measured workflow.`, 'error');
+  } finally {
+    loudnormEnqueueing.delete(job.id);
+  }
+}
+
+async function reconcileLoudnormJobs() {
+  const recovered = state.loudnormRecoveryPending;
+  state.loudnormRecoveryPending = false;
+  for (const id of Object.keys(state.loudnormPending)) {
+    const job = state.jobs.find((candidate) => candidate.id === id);
+    if (!job) {
+      delete state.loudnormPending[id];
+      saveLoudnormPending();
+      notify('Two-pass recovery stopped', 'The saved pass 1 job is no longer present in the queue, so pass 2 was not started.', 'error');
+      continue;
+    }
+    await reconcileLoudnormJob(job, recovered);
+  }
 }
 
 function wireView() {
@@ -988,9 +1250,17 @@ function openRegex() {
 
 function filterJobEvent(payload) {
   if (!payload) return;
-  if (Array.isArray(payload.jobs)) state.jobs=payload.jobs.slice(0,1000).map(normalizeJob);
-  else if (payload.job && typeof payload.job === 'object') { const normalized=normalizeJob(payload.job,0), index=state.jobs.findIndex((job)=>job.id===normalized.id); if(index>=0)state.jobs[index]=normalized; else state.jobs.unshift(normalized); completeLoudnorm(normalized); }
-  else if (payload.type === 'cleared' && Array.isArray(payload.ids)) { const cleared=new Set(payload.ids.map(String)); state.jobs=state.jobs.filter((job)=>!cleared.has(job.id)); state.selectedJobs=new Set([...state.selectedJobs].filter((id)=>!cleared.has(id))); if(cleared.has(state.selectedJobId))state.selectedJobId=''; }
+  if (Array.isArray(payload.jobs)) { state.jobs=payload.jobs.slice(0,1000).map(normalizeJob); void reconcileLoudnormJobs(); }
+  else if (payload.job && typeof payload.job === 'object') { const normalized=normalizeJob(payload.job,0), index=state.jobs.findIndex((job)=>job.id===normalized.id); if(index>=0)state.jobs[index]=normalized; else state.jobs.unshift(normalized); void reconcileLoudnormJob(normalized); }
+  else if (payload.type === 'cleared' && Array.isArray(payload.ids)) {
+    const cleared=new Set(payload.ids.map(String));
+    state.jobs=state.jobs.filter((job)=>!cleared.has(job.id));
+    state.selectedJobs=new Set([...state.selectedJobs].filter((id)=>!cleared.has(id)));
+    if(cleared.has(state.selectedJobId))state.selectedJobId='';
+    const abandoned=[...cleared].filter((id)=>state.loudnormPending[id]);
+    abandoned.forEach((id)=>delete state.loudnormPending[id]);
+    if(abandoned.length){saveLoudnormPending();notify('Two-pass normalization stopped',`${abandoned.length} saved pass 1 job${abandoned.length===1?' was':'s were'} cleared before pass 2 could start.`,'error');}
+  }
   else return;
   const raw=payload.job;
   if(state.settings.notifyComplete&&raw&&['completed','failed','cancelled','interrupted'].includes(raw.status)) {
@@ -1012,11 +1282,13 @@ $('#appearance-reset').onclick=()=>{delete state.settings.appearance;saveUi();ap
 window.addEventListener('keydown',(event)=>{if(event.ctrlKey&&event.shiftKey&&event.key.toLowerCase()==='f'){event.preventDefault();openPalette();}});
 
 async function initialize() {
+  restoreLoudnormPending();
   render();
+  if (state.loudnormRecoveryNotice) notify('Saved loudness workflow state was not fully restored', state.loudnormRecoveryNotice, 'error');
   try { state.settings.parallel = clamp(await apiCall('jobs.setConcurrency', state.settings.parallel), 1, 4); saveUi(); }
   catch(error){notify('Parallel-job setting unavailable',error.message,'error');}
-  await Promise.all([refreshRuntime(),refreshJobs()]);
   try { const unsubscribe=window.api?.jobs?.onEvent?.(filterJobEvent); if(typeof unsubscribe==='function')window.addEventListener('beforeunload',unsubscribe,{once:true}); }
   catch(error){notify('Live job updates unavailable',error.message,'error');}
+  await Promise.all([refreshRuntime(),refreshJobs()]);
 }
 window.state=state; window.save=saveUi; window.render=render; window.openRegex=openRegex; initialize();

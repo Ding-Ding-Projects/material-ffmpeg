@@ -92,6 +92,18 @@ function registerIpc(runtime) {
     return result.canceled || !result.filePath ? null : files.register(result.filePath, 'output');
   });
 
+  trustedHandle('loudnorm:retain-selections', (spec) => {
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec) ||
+      Object.keys(spec).length !== 2 || !Object.prototype.hasOwnProperty.call(spec, 'inputHandle') ||
+      !Object.prototype.hasOwnProperty.call(spec, 'outputHandle')) {
+      throw new TypeError('Loudness selection retention requires exactly one input and one output handle.');
+    }
+    return {
+      input: files.retain(spec.inputHandle, 'input'),
+      output: files.retain(spec.outputHandle, 'output')
+    };
+  });
+
   trustedHandle('probe:inspect', (fileHandle) => runtime.inspect(fileHandle));
   trustedHandle('probe:export', (spec) => runtime.exportProbe(spec));
   trustedHandle('jobs:enqueue', (spec) => jobs.enqueue(spec));

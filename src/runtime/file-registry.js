@@ -82,6 +82,21 @@ class FileRegistry {
     return entry.path;
   }
 
+  retain(handle, expectedKind, ttlMs = MAX_TTL_MS) {
+    this._validateHandle(handle);
+    if (!KINDS.has(expectedKind)) {
+      throw new TypeError('A file handle kind is required when retaining a selection.');
+    }
+    const lifetime = boundedInteger(ttlMs, MAX_TTL_MS, MIN_TTL_MS, MAX_TTL_MS, 'Retained file handle lifetime');
+    const entry = this._get(handle);
+    if (entry.kind !== expectedKind) {
+      throw new Error(`The selected file handle is not an ${expectedKind} handle.`);
+    }
+    entry.expiresAt = Math.max(entry.expiresAt, this._now() + lifetime);
+    this._scheduleCleanup();
+    return this.describe(handle);
+  }
+
   release(handle) {
     this._validateHandle(handle);
     const released = this._entries.delete(handle);

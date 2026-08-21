@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "source": "docs/feature-inventory.json",
+  "generator": "scripts/generate-feature-report.mjs",
+  "receiptDirectory": "artifacts/verification/receipts",
+  "statuses": {
+    "working": "Every declared implementation and document exists, and an exact-commit receipt records a successful real interaction plus its evidence.",
+    "failed": "A declared implementation or document is missing, a real interaction failed, or its receipt is malformed or belongs to another commit.",
+    "unrun": "Declarations exist but the real interaction has not produced an exact-commit receipt.",
+    "not-applicable": "A receipt names the exact technical boundary and the closest shipped equivalent. This is never inferred automatically."
+  },
+  "failClosed": true,
+  "knownExternalLimitations": [
+    {
+      "featureId": "repository-social-preview-upload",
+      "status": "unrun",
+      "reason": "The gh CLI has no supported route for uploading the repository social-preview setting. The committed asset cannot prove that setting was changed."
+    }
+  ],
+  "currentReportCommand": "node scripts/generate-feature-report.mjs --commit <exact-commit> --output artifacts/verification/current-feature-verdicts.json"
+}

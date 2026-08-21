@@ -16,7 +16,10 @@
     "package:app": "electron-builder --dir --win",
     "predist": "npm run prepare:package",
     "dist": "electron-builder --win squirrel",
-    "count:lines": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/count-lines.ps1"
+    "count:lines": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/count-lines.ps1",
+    "report:features": "node scripts/generate-feature-report.mjs",
+    "capture:plan": "node scripts/capture-plan.mjs",
+    "capture:verify": "node scripts/capture-verify.mjs"
   },
   "devDependencies": {
     "7zip-bin": "5.2.0",

@@ -1,28 +1,23 @@
-# HANDOFF — material-ffmpeg (Electron app)
+# Handoff
 
-The UI is complete and self-running with mock data. A wiring agent's ONLY job is connecting real ffmpeg/ffprobe output to the existing surfaces. Do not redesign; the DC file `design/source/FFmpeg Media Console.dc.html` is the visual source of truth ("what it looks like").
+## Delivery lane
 
-## Run / package
-- `npm install && npm start` (Electron ≥33). `npm run dist` → Squirrel.Windows, **unsigned by permanent policy** (forceCodeSigning=false must stay).
-- Requires `ffmpeg`/`ffprobe` on PATH for real execution; every screen renders without them.
+- GitHub Pages home: commit `b110674b715e895a0aaf747c4556c749ed56ef12`.
+- Runtime archive: FFmpeg 9.0.1 full Windows x64, pinned by URL and SHA-256 in `dependencies.json`.
+- Toolchain: Node.js 22.18.0 Windows x64 and `7zip-bin` 5.2.0 are pinned through the manifest and package lock.
+- Packaging: unsigned Squirrel.Windows with generated multi-resolution icon, bundled FFmpeg/FFprobe, upstream license/build information, and source-commit metadata.
+- Manual entry points: `download-dependencies.bat`, `build.bat`, and `build-installer.bat`.
+- Automation: every push or manual dispatch builds, publishes a unique non-draft release, and deploys `docs/`.
 
-## IPC contract (already implemented in main.js / preload.js)
-- `window.api.window.{minimize,maximize,close}` — frameless titlebar controls (wired).
-- `window.api.openFile()` → native file picker path (wired to Convert › Change input).
-- `window.api.runFfmpeg({bin, args, jobId})` → spawns, resolves `{code}`.
-- `window.api.onLog(cb)` → streamed stderr/stdout lines `{jobId, line}` (already appended to the Jobs log pane).
+## Verification boundary
 
-## Wiring TODOs (in priority order)
-1. **Registries** — replace the representative rows in `renderer.js` `REGISTRY` with real parses of `ffmpeg -codecs / -formats / -protocols / -bsfs / -devices / -filters` (run once at startup via `runFfmpeg`, cache in localStorage).
-2. **Jobs** — replace the `JOBS` mock array with a real queue: build args from `liveCommand()`, call `runFfmpeg`, parse `frame=/fps=/speed=` lines into the progress bars.
-3. **ffprobe inspector** — `ffprobe -v quiet -print_format json -show_format -show_streams <file>` → populate `VIEWS.inspector`.
-4. **Option guides** — `option-guides.js` `DOCS` holds ~30 curated entries. Long-tail options: generate entries from `ffmpeg -h encoder=<name>` output (same shape: kind/body/values/min/max).
-5. **Converter** — byte-detection is illustrative; implement magic-number sniffing in main process (read first 16 bytes).
+This speed pass intentionally did not run tests, lint, reviews, accessibility checks, screenshots, a package build, or installer execution. The scripts and workflow contain file, version, checksum, package-content, commit, and unsigned-state assertions; those assertions become evidence only when the corresponding build completes successfully.
 
-## Feature map (all working in-UI today)
-- Views: overview, convert (full libx264), trim, filtergraph, audio/loudnorm, gif, presets, inspector, 6 registries, hwaccel/NVENC, streaming/HLS, jobs (+bulk select/pause/cancel), composer, file converter, settings.
-- Universal: Ctrl+Shift+F palette · regex builder (tokens, recipes, flags, explanation; draggable, close only via buttons) · option guides (ⓘ on every config; enum listbox w/ search+regex, number stepper+slider, rich bool cards, array builder w/ bulk actions; live command preview; draggable) · right-click menus with search on tabs/jobs/registry (+Edit appearance, toy Lock, support ticket) · functional toy locks (unlock via two-key gate) · two-key+slider super confirmation · per-element appearance editor · app-logo customization · notification centre · personal vocabulary upload (validated schema v1 ≤64 KB, persisted, applied to nav labels) · theme dark/light · state persisted in localStorage (`mffmpeg.*`).
-- **No Ollama** — intentionally excluded by owner instruction.
+## Expected release assets
 
-## Invariants
-- Never enable code signing. Never remove a universal feature to "simplify". Vocabulary JSON stays local; never bundle real user vocabulary into committed code.
+- `material-ffmpeg-setup-<version>.exe`
+- `RELEASES`
+- `material-ffmpeg-<version>-full.nupkg`
+- `SHA256SUMS.txt`
+
+Integrate the trusted runtime and renderer wiring before selecting the release candidate. Build against that exact commit and use the terminal workflow evidence as the release verdict.

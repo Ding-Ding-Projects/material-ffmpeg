@@ -1,32 +1,51 @@
 # material-ffmpeg
 
-Local Material 3 Electron control plane for FFmpeg. Frameless shell, left rail + section sidebar, browser-style workspace tabs, and a typed editor for every codec/filter/muxer/protocol option — no bare textboxes, no terminal required.
+material-ffmpeg is a local Windows desktop interface for FFmpeg. It turns conversion, trimming, filtering, audio, GIF, thumbnail, streaming, inspection, and batch workflows into guided controls while keeping the exact FFmpeg command visible.
 
-Design source of truth: `design/source/FFmpeg Media Console.dc.html` (the design component this app is ported from).
+- [Project site](https://ding-ding-projects.github.io/material-ffmpeg/)
+- [Releases](https://github.com/Ding-Ding-Projects/material-ffmpeg/releases)
+- [Source](https://github.com/Ding-Ding-Projects/material-ffmpeg)
 
-## Run
+The supplied design is preserved under `design/source/`. Official FFmpeg source is pinned under `third_party/ffmpeg`; installed builds use a separately downloaded, checksum-verified FFmpeg 9.0.1 runtime.
 
-```
-npm install
-npm start
-```
+## Build on Windows
 
-Requires `ffmpeg`/`ffprobe` on PATH for real job execution (the UI runs fully without them).
-
-## Package (Squirrel.Windows, unsigned by policy)
-
-```
-npm run dist
+```bat
+download-dependencies.bat /s
+build.bat /s
+build-installer.bat /s
 ```
 
-## Structure
+The scripts accept `/s`, `--silent`, or `SILENT=1`. They obtain the pinned Node.js toolchain, restore the exact npm lockfile, verify the FFmpeg archive SHA-256, generate the application icon, and build through the same unsigned Squirrel.Windows path used by automation.
 
-- `src/main.js` — frameless BrowserWindow, window-control IPC, ffmpeg spawn bridge with streamed log lines
-- `src/preload.js` — contextBridge API (`window.api`)
-- `src/index.html` — shell + all dialogs (palette, regex builder, two-key confirmation, appearance, logo, notifications, tab manager)
-- `src/renderer.js` — views, state (persisted to localStorage), live command building
-- `src/styles.css` — Material 3 tokens, dark + light
+`build.bat` produces a runnable unpacked application and optionally launches it. `build-installer.bat` produces and validates the setup executable, `RELEASES`, full `.nupkg`, bundled FFmpeg/FFprobe, upstream license evidence, source commit metadata, and SHA-256 values.
 
-## Universal features
+> **Unsigned software:** code signing is intentionally disabled. Windows may display an unknown-publisher or SmartScreen warning.
 
-Command palette (Ctrl+Shift+F) · regex builder beside every search · personal-vocabulary JSON upload (validated: schema v1, ≤64 KB, private/local) · app-logo customization (presentation only) · two-key + slider super confirmation · per-element appearance editor · notification centre · tab manager with safe close preview. Ollama is intentionally excluded per owner instruction.
+## Runtime and privacy
+
+Media processing runs locally. The renderer cannot select an arbitrary executable or spawn a shell; the privileged process owns trusted FFmpeg resolution, job lifecycle, and bounded output delivery.
+
+The runtime is pinned in `dependencies.json`. Generated dependencies, bundled binaries, caches, and build output are not committed.
+
+## Release automation
+
+Every push and manual dispatch builds one uniquely tagged, non-draft release and deploys `docs/` to GitHub Pages. The workflow builds and packages only; it intentionally runs no tests, lint, type checking, static analysis, accessibility checks, or screenshots.
+
+The committed line counter is reproducible with `npm run count:lines`.
+
+## Licensing
+
+The application source is MIT licensed. FFmpeg is a separate GPLv3 project distributed under its own terms. See `THIRD_PARTY_NOTICES.md` and the upstream license/build-information files packaged beside the runtime.
+
+<details>
+<summary>Repository layout</summary>
+
+- `src/` — application and trusted runtime boundary
+- `resources/` — icon source and generated runtime destination
+- `scripts/` — dependency, build, package, verification, and line-count tooling
+- `docs/` — responsive GitHub Pages site
+- `design/source/` — supplied design archive contents
+- `third_party/ffmpeg` — pinned official source reference
+
+</details>

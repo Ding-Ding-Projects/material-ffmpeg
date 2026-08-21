@@ -14,6 +14,12 @@ logs/
 .cache/
 .electron/
 
+# Generated bundled runtime and package metadata
+resources/ffmpeg/*
+!resources/ffmpeg/README.md
+resources/app-icon.ico
+resources/build-metadata.json
+
 # Test and coverage output
 coverage/
 test-results/

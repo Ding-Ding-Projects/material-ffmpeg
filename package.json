@@ -8,7 +8,7 @@
   "license": "MIT",
   "scripts": {
     "start": "electron .",
-    "dependencies": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/download-dependencies.ps1 -Silent",
+    "fetch:dependencies": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/download-dependencies.ps1 -Silent",
     "icon": "node scripts/generate-app-icon.mjs",
     "metadata": "node scripts/write-build-metadata.mjs",
     "prepare:package": "node scripts/clean-output.mjs && npm run icon && npm run metadata && powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/download-ffmpeg.ps1 -Silent",

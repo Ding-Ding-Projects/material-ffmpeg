@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10131a">
+  <meta name="description" content="material-ffmpeg is a local Material 3 control plane for FFmpeg with typed options, job visibility, and offline-first workflows.">
+  <title>material-ffmpeg · Local FFmpeg control plane</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar">
+    <a class="brand" href="#main" aria-label="material-ffmpeg home">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>material-ffmpeg</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#features">Features</a>
+      <a href="#install">Install</a>
+      <a href="#privacy">Privacy</a>
+      <a class="nav-cta" href="https://github.com/Ding-Ding-Projects/material-ffmpeg/releases">Releases <span aria-hidden="true">↗</span></a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-copy">
+        <p class="eyebrow">LOCAL MEDIA CONSOLE · WINDOWS</p>
+        <h1 id="hero-title">Every FFmpeg option.<br><em>A calmer way to use it.</em></h1>
+        <p class="lede">A focused desktop control plane for building, inspecting, and running media jobs without memorising flags or living in a terminal.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="https://github.com/Ding-Ding-Projects/material-ffmpeg">View source <span aria-hidden="true">↗</span></a>
+          <a class="button secondary" href="https://github.com/Ding-Ding-Projects/material-ffmpeg/releases">Release history <span aria-hidden="true">↗</span></a>
+        </div>
+        <p class="microcopy"><span class="status-dot" aria-hidden="true"></span> Local-first · No account · MIT licensed</p>
+      </div>
+      <div class="hero-card" aria-label="Product capabilities summary">
+        <div class="window-chrome"><span></span><span></span><span></span><b>Media Console</b></div>
+        <div class="hero-card-body">
+          <p class="card-kicker">WORKSPACE READY</p>
+          <h2>Build a command<br>you can understand.</h2>
+          <div class="command-line"><span>ffmpeg</span><span>-i input.mov</span><span>-c:v libx264</span></div>
+          <div class="meter-row"><span>Option coverage</span><strong>typed</strong></div>
+          <div class="meter"><span></span></div>
+          <p class="card-note">Typed controls, live command preview, and visible job output in one workspace.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="features" aria-labelledby="features-title">
+      <div class="section-heading"><p class="eyebrow">THE CORE WORKFLOW</p><h2 id="features-title">Clarity at every step.</h2><p>Designed around the moments that make command-line media work feel uncertain.</p></div>
+      <div class="feature-grid">
+        <article class="feature-card"><span class="feature-icon" aria-hidden="true">⌘</span><h3>Typed option editing</h3><p>Codec, filter, muxer, protocol, and device options become guided controls with inline explanations and safe values.</p></article>
+        <article class="feature-card"><span class="feature-icon" aria-hidden="true">◈</span><h3>Live command preview</h3><p>See the exact FFmpeg command as you compose it, with the details needed to copy, review, or run it.</p></article>
+        <article class="feature-card"><span class="feature-icon" aria-hidden="true">▣</span><h3>Jobs you can follow</h3><p>Queue work, read streamed output, and keep progress, pause, cancel, and bulk actions close at hand.</p></article>
+        <article class="feature-card"><span class="feature-icon" aria-hidden="true">⌁</span><h3>Inspect and convert</h3><p>Open a file, inspect streams and metadata, or move through a local conversion workflow without leaving the app.</p></article>
+        <article class="feature-card"><span class="feature-icon" aria-hidden="true">✦</span><h3>Workspace tabs</h3><p>Keep overview, trim, filters, audio, GIF, presets, hardware, streaming, and jobs in browser-style tabs.</p></article>
+        <article class="feature-card"><span class="feature-icon" aria-hidden="true">⚙</span><h3>Personalise safely</h3><p>Light and dark themes, appearance controls, a command palette, notifications, and private local preferences.</p></article>
+      </div>
+    </section>
+
+    <section class="split-section" id="install" aria-labelledby="install-title">
+      <div><p class="eyebrow">INSTALLATION</p><h2 id="install-title">Ready when the verified build is ready.</h2><p>The public release page is the only source for downloadable installers. It is intentionally shown as pending here until an immutable, verified Windows asset exists.</p></div>
+      <div class="install-card"><span class="pill pending">PENDING VERIFIED RELEASE</span><h3>Windows installer</h3><p>No download is advertised yet. Check the release page for the first published Squirrel.Windows installer and its checksums.</p><a class="button secondary" href="https://github.com/Ding-Ding-Projects/material-ffmpeg/releases">Open releases <span aria-hidden="true">↗</span></a><p class="warning">Unsigned by policy · Windows may show an unknown-publisher warning.</p></div>
+    </section>
+
+    <section class="details-grid" id="privacy" aria-labelledby="privacy-title">
+      <div class="detail-card"><p class="eyebrow">PRIVACY</p><h2 id="privacy-title">Your media stays on your machine.</h2><p>material-ffmpeg is designed for local processing. Files, command settings, job output, and preferences remain on the device. There is no account, analytics, or required cloud service.</p><p class="small-note">Real execution uses the FFmpeg and FFprobe binaries available to the app. The UI remains usable for planning and inspection when those tools are not present.</p></div>
+      <div class="detail-card"><p class="eyebrow">LICENSING</p><h2>Built around FFmpeg.</h2><p>FFmpeg is provided under its own licensing terms, including GPLv3 for GPL builds. Review the exact build and licensing notices shipped with the release you use.</p><p class="small-note">This application is MIT licensed. It does not change FFmpeg's obligations or the terms of any codec, filter, or library you select.</p></div>
+    </section>
+
+    <section class="source-strip" aria-labelledby="source-title"><div><p class="eyebrow">OPEN SOURCE</p><h2 id="source-title">Read the code. Follow the build.</h2><p>Source, packaging configuration, design notes, and release history live in the project repository.</p></div><div class="source-actions"><a class="button primary" href="https://github.com/Ding-Ding-Projects/material-ffmpeg">GitHub repository <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/Ding-Ding-Projects/material-ffmpeg/blob/main/README.md">Build instructions <span aria-hidden="true">↗</span></a></div></section>
+  </main>
+
+  <footer class="footer"><span>material-ffmpeg · local media tooling</span><span><a href="https://github.com/Ding-Ding-Projects/material-ffmpeg/releases">Releases</a> · <a href="https://github.com/Ding-Ding-Projects/material-ffmpeg">Source</a></span></footer>
+</body>
+</html>

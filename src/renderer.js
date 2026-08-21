@@ -18,6 +18,23 @@ const DEFAULT_TABS = [
   { id: 'jobs', label: 'Jobs & logs', icon: 'receipt_long', pinned: false, group: 'Home' }
 ];
 
+const SUPPORTED_ICON_LIGATURES = new Set([
+  'account_tree', 'bookmarks', 'check', 'check_circle', 'content_cut', 'dashboard', 'database',
+  'developer_board', 'draft', 'east', 'error', 'folder_zip', 'gif_box', 'graphic_eq', 'grid_on',
+  'info', 'keep', 'keyboard_command_key', 'lan', 'light_mode', 'memory', 'menu', 'movie',
+  'notifications', 'open_in_full', 'output', 'podcasts', 'published_with_changes', 'receipt_long',
+  'search_insights', 'settings', 'swap_horiz', 'sync_alt', 'tab', 'terminal', 'tune', 'upload_file',
+  'videocam'
+]);
+const normalizeTabIcon = (value) => {
+  const icon = String(value ?? '').trim();
+  return SUPPORTED_ICON_LIGATURES.has(icon) ? icon : 'tab';
+};
+const normalizeTabs = (value) => (Array.isArray(value) ? value : DEFAULT_TABS).filter((tab) => tab && typeof tab === 'object').map((tab) => ({
+  ...tab,
+  icon: normalizeTabIcon(tab.icon)
+}));
+
 const FUNNY_LEVEL_DEFAULT = 5;
 const DEFAULT_SETTINGS = Object.freeze({
   parallel: 2,
@@ -49,7 +66,7 @@ const state = {
   jobs: [], selectedJobs: new Set(), selectedJobId: '', catalogs: {}, catalogErrors: {}, catalogLoading: {},
   inputs: {}, outputs: {}, probe: null, probeError: '', audioStreams: [],
   filters: store.get('filters', [{ name: 'scale', options: '1920:-2' }]), selectedFilter: 0,
-  presets: store.get('presets', []), converterFiles: [], tabs: store.get('tabs', DEFAULT_TABS),
+  presets: store.get('presets', []), converterFiles: [], tabs: normalizeTabs(store.get('tabs', DEFAULT_TABS)),
   notifications: store.get('notifications', []),
   settings: normalizeSettings(store.get('settings', {})),
   loudnormPending: {},
@@ -307,7 +324,7 @@ function render() {
   $('#rail').innerHTML = RAIL.map(([id,icon,label]) => `<button class="rail-item${id === group ? ' active' : ''}" data-group="${id}"><span class="ms">${icon}</span><b>${label}</b></button>`).join('') + '<div class="rail-spacer"></div><button class="rail-item" id="palette-open"><span class="ms">keyboard_command_key</span><b>Commands</b></button>';
   const version = state.runtime.loading ? 'Checking runtime…' : state.runtime.available ? `FFmpeg ${esc(state.runtime.version || 'ready')}` : 'FFmpeg unavailable';
   $('#subnav').innerHTML = `<p class="eyebrow">${esc(GROUPS[group].title)}</p><div style="display:grid;gap:3px">${GROUPS[group].items.map(([id,icon,label]) => `<button class="subnav-item${id === state.view ? ' active' : ''}" data-go="${id}"><span class="ms">${icon}</span><span>${esc(label)}</span></button>`).join('')}</div><div class="build-note"><b>${version}</b><br>${esc(state.runtime.error || 'Bundled runtime')}</div>`;
-  $('#tabs').innerHTML = state.tabs.map((tab) => `<button class="tab${(tab.view || tab.id) === state.view ? ' active' : ''}" data-go="${esc(tab.view || tab.id)}" role="tab" data-tab-id="${esc(tab.id)}"><span class="ms">${esc(tab.icon || 'tab')}</span><span>${esc(tab.label)}</span>${tab.pinned ? '<span class="ms">keep</span>' : ''}</button>`).join('') + '<button id="tab-add" title="Open current view as a tab">+</button><button id="tab-list"><span class="ms">menu</span></button><div class="palette-hint" id="palette-open-2">Search everything <b>Ctrl+Shift+F</b></div>';
+  $('#tabs').innerHTML = state.tabs.map((tab) => `<button class="tab${(tab.view || tab.id) === state.view ? ' active' : ''}" data-go="${esc(tab.view || tab.id)}" role="tab" data-tab-id="${esc(tab.id)}"><span class="ms">${esc(normalizeTabIcon(tab.icon))}</span><span>${esc(tab.label)}</span>${tab.pinned ? '<span class="ms">keep</span>' : ''}</button>`).join('') + '<button id="tab-add" title="Open current view as a tab">+</button><button id="tab-list"><span class="ms">menu</span></button><div class="palette-hint" id="palette-open-2">Search everything <b>Ctrl+Shift+F</b></div>';
   $('#content').innerHTML = (VIEWS[state.view] || VIEWS.overview)(); $('#live-command').textContent = safePreview();
   document.body.classList.toggle('light', state.theme === 'light');
   const logo = $('#logo-open'); logo.textContent = state.logo.image ? '' : state.logo.glyph || 'M'; logo.style.backgroundImage = state.logo.image ? `url(${state.logo.image})` : ''; logo.style.backgroundSize = 'cover'; logo.style.backgroundPosition = 'center';

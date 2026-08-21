@@ -1,3 +1,4 @@
+@font-face{font-family:'Material Symbols Outlined';font-style:normal;font-weight:100 700;font-display:block;src:url('./assets/fonts/material-symbols-outlined.woff2') format('woff2')}
 :root{color-scheme:dark;--bg:#101416;--surface:#171c1e;--surface2:#20282a;--surface3:#293234;--text:#e4eeee;--muted:#aab9b9;--line:#3c494a;--accent:#82d5cc;--on-accent:#003733;--tonal:#274946;--danger:#ffb4ab;--chipbg:#284442;--titlebg:#0d1112;--railbg:#13191a;--tabsbg:#141a1b;--mono:"Cascadia Mono","Consolas",monospace;font:14px/1.45 "Segoe UI Variable Text","Segoe UI",sans-serif}
 body.light{color-scheme:light;--bg:#f6faf9;--surface:#fff;--surface2:#e8f0ef;--surface3:#dce8e6;--text:#172020;--muted:#536261;--line:#aabbb9;--accent:#006a63;--on-accent:#fff;--tonal:#cce8e4;--danger:#93000a;--chipbg:#cce8e4;--titlebg:#e4efed;--railbg:#eef5f4;--tabsbg:#e9f1f0}
 *{box-sizing:border-box}
@@ -9,7 +10,7 @@ button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid 
 input[type=range]{accent-color:var(--accent)}
 input[type=checkbox]{accent-color:var(--accent);width:17px;height:17px}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-thumb{background:var(--surface3);border-radius:8px}
-.ms{font-family:'Material Symbols Outlined','Segoe UI Symbol';font-weight:normal;font-style:normal;display:inline-block;line-height:1;vertical-align:middle;-webkit-user-select:none;user-select:none}
+.ms{font-family:'Material Symbols Outlined';font-weight:400;font-style:normal;font-optical-sizing:auto;font-variation-settings:'FILL' 0,'wght' 400,'GRAD' 0,'opsz' 24;font-feature-settings:'liga';-webkit-font-feature-settings:'liga';font-variant-ligatures:contextual;letter-spacing:normal;text-transform:none;white-space:nowrap;word-wrap:normal;direction:ltr;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;display:inline-block;line-height:1;vertical-align:middle;-webkit-user-select:none;user-select:none}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
 .titlebar{height:44px;display:flex;align-items:center;padding:0 14px;background:var(--titlebg);border-bottom:1px solid var(--line);-webkit-app-region:drag}

@@ -5,6 +5,101 @@
   const escg = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const num = (o) => ({ kind: 'num', ...o }), en = (o) => ({ kind: 'enum', ...o }), bo = (o) => ({ kind: 'bool', ...o }), arr = (o) => ({ kind: 'array', ...o });
 
+  const RUNTIME_LIMITS = Object.freeze({ results: 250, name: 256, description: 2000, help: 65536, error: 400, timeoutMs: 15000 });
+  const runtimeCache = new Map();
+  const boundedText = (value, max) => String(value == null ? '' : value).replace(/\u0000/g, '').slice(0, max);
+  const runtimeErrorText = (error) => boundedText(error && error.message ? error.message : error || 'Unknown runtime error.', RUNTIME_LIMITS.error);
+  const validCatalogToken = (value, label) => {
+    const token = boundedText(value, 64).trim();
+    if (!/^[a-z0-9][a-z0-9:_-]{0,63}$/i.test(token)) throw new Error(`${label} contains unsupported characters.`);
+    return token;
+  };
+  const withRuntimeTimeout = (operation) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('The bundled FFmpeg request timed out.')), RUNTIME_LIMITS.timeoutMs);
+    Promise.resolve(operation).then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+  });
+  const runtimeCatalogApi = () => {
+    const catalog = window.api && window.api.catalog;
+    return catalog && typeof catalog.list === 'function' && typeof catalog.help === 'function' ? catalog : null;
+  };
+  const normalizeRuntimeItem = (item, index) => {
+    if (typeof item === 'string' || typeof item === 'number') {
+      const name = boundedText(item, RUNTIME_LIMITS.name).trim();
+      return name ? { id: name, name, description: '', index } : null;
+    }
+    if (Array.isArray(item)) {
+      const name = boundedText(item[0], RUNTIME_LIMITS.name).trim();
+      return name ? { id: name, name, description: boundedText(item.slice(1).filter(Boolean).join(' '), RUNTIME_LIMITS.description), index } : null;
+    }
+    if (!item || typeof item !== 'object') return null;
+    const name = boundedText(item.name ?? item.label ?? item.id ?? item.key ?? item.value, RUNTIME_LIMITS.name).trim();
+    if (!name) return null;
+    const description = boundedText(item.description ?? item.summary ?? item.longName ?? item.detail ?? item.type ?? '', RUNTIME_LIMITS.description).trim();
+    return { id: boundedText(item.id ?? item.key ?? name, RUNTIME_LIMITS.name) || name, name, description, index };
+  };
+  const catalogArrayFrom = (payload) => {
+    if (Array.isArray(payload)) return payload;
+    if (typeof payload === 'string') return payload.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    if (!payload || typeof payload !== 'object') return [];
+    for (const key of ['items', 'entries', 'results', 'data', 'catalog']) if (Array.isArray(payload[key])) return payload[key];
+    return [];
+  };
+  const normalizeCatalogPayload = (payload, limit) => {
+    if (payload && typeof payload === 'object' && payload.ok === false) throw new Error(payload.error || payload.message || 'The bundled FFmpeg catalog request failed.');
+    const source = catalogArrayFrom(payload);
+    const items = [];
+    const seen = new Set();
+    for (let index = 0; index < source.length && items.length < limit; index += 1) {
+      const normalized = normalizeRuntimeItem(source[index], index);
+      if (!normalized) continue;
+      const key = `${normalized.name}\u0000${normalized.description}`;
+      if (seen.has(key)) continue;
+      seen.add(key); items.push(normalized);
+    }
+    return { items, total: Number.isFinite(payload && payload.total) ? Math.max(items.length, payload.total) : source.length, truncated: source.length > items.length || !!(payload && payload.truncated) };
+  };
+  const normalizeHelpPayload = (payload) => {
+    if (payload && typeof payload === 'object' && payload.ok === false) throw new Error(payload.error || payload.message || 'The bundled FFmpeg help request failed.');
+    const source = payload && typeof payload === 'object' ? (payload.text ?? payload.help ?? payload.output ?? payload.data ?? '') : payload;
+    const original = String(source == null ? '' : source).replace(/\u0000/g, '');
+    return { text: original.slice(0, RUNTIME_LIMITS.help), truncated: original.length > RUNTIME_LIMITS.help || !!(payload && payload.truncated) };
+  };
+  const runtimeCatalog = {
+    async list(kind, options = {}) {
+      let safeKind;
+      try { safeKind = validCatalogToken(kind, 'Catalog kind'); } catch (error) { return { status: 'error', kind: '', items: [], error: runtimeErrorText(error) }; }
+      const requested = Number(options.limit);
+      const limit = Number.isFinite(requested) ? Math.max(1, Math.min(RUNTIME_LIMITS.results, Math.floor(requested))) : RUNTIME_LIMITS.results;
+      const api = runtimeCatalogApi();
+      if (!api) return { status: 'unavailable', kind: safeKind, items: [], error: 'The bundled FFmpeg catalog bridge is unavailable.' };
+      const cacheKey = `list:${safeKind}:${limit}`;
+      if (!options.refresh && runtimeCache.has(cacheKey)) return runtimeCache.get(cacheKey);
+      try {
+        const normalized = normalizeCatalogPayload(await withRuntimeTimeout(api.list(safeKind)), limit);
+        const result = { status: normalized.items.length ? 'ready' : 'empty', kind: safeKind, ...normalized };
+        runtimeCache.set(cacheKey, result); return result;
+      } catch (error) {
+        return { status: 'error', kind: safeKind, items: [], error: runtimeErrorText(error) };
+      }
+    },
+    async help(kind, name, options = {}) {
+      let safeKind; let safeName;
+      try { safeKind = validCatalogToken(kind, 'Help kind'); safeName = boundedText(name, RUNTIME_LIMITS.name).trim(); if (!safeName) throw new Error('Help name is required.'); } catch (error) { return { status: 'error', kind: '', name: '', text: '', error: runtimeErrorText(error) }; }
+      const api = runtimeCatalogApi();
+      if (!api) return { status: 'unavailable', kind: safeKind, name: safeName, text: '', error: 'The bundled FFmpeg help bridge is unavailable.' };
+      const cacheKey = `help:${safeKind}:${safeName}`;
+      if (!options.refresh && runtimeCache.has(cacheKey)) return runtimeCache.get(cacheKey);
+      try {
+        const normalized = normalizeHelpPayload(await withRuntimeTimeout(api.help(safeKind, safeName)));
+        const result = { status: normalized.text.trim() ? 'ready' : 'empty', kind: safeKind, name: safeName, ...normalized };
+        runtimeCache.set(cacheKey, result); return result;
+      } catch (error) {
+        return { status: 'error', kind: safeKind, name: safeName, text: '', error: runtimeErrorText(error) };
+      }
+    },
+    clearCache() { runtimeCache.clear(); }
+  };
+
   const DOCS = {
     crf: num({ name: 'crf', flag: '-crf', body: 'Select the quality for constant quality mode. Rate factor 0–51: each +6 roughly halves bitrate. 18 is often called visually lossless for 8-bit H.264; 23 is the encoder default.', note: 'Mutually exclusive with -b:v two-pass targeting. VBV (-maxrate/-bufsize) can cap it for streaming.', min: 0, max: 51, step: 1, def: 23, stateKey: 'crf', preview: (v) => `-c:v libx264 -crf ${v}` }),
     crfMax: num({ name: 'crf_max', flag: '-crf_max', body: 'In CRF mode, prevents VBV from lowering quality beyond this point — a worst-quality floor during demanding scenes.', min: 0, max: 51, step: 1, def: 28, stateKey: 'crfMax', preview: (v) => `-crf_max ${v}` }),
@@ -39,15 +134,58 @@
     hlsflags: arr({ name: 'hls_flags', flag: '-hls_flags', body: "Bit flags combined with '+'. Array option — build the set; controls adapt to flag type.", noun: 'muxer flags', arrKey: 'hlsFlagsArr', choices: ['delete_segments', 'independent_segments', 'append_list', 'temp_file', 'program_date_time', 'omit_endlist', 'split_by_time', 'discont_start'], preview: (a) => a.length ? `-hls_flags +${a.join('+')}` : '(no flags set)' }),
     x264params: arr({ name: 'x264-params', flag: '-x264-params', body: 'Override x264 config with :-separated key=value list — the escape hatch to every internal knob. Free-form key=value items.', noun: 'key=value pairs', text: true, arrKey: 'x264ParamsArr', placeholder: 'e.g. keyint=48', preview: (a) => a.length ? `-x264-params ${a.join(':')}` : '(none)' }),
   };
+  const HELP_TARGETS = {
+    crf: ['encoder', 'libx264'], crfMax: ['encoder', 'libx264'], lookahead: ['encoder', 'libx264'], preset: ['encoder', 'libx264'], tune: ['encoder', 'libx264'], profile: ['encoder', 'libx264'], level: ['encoder', 'libx264'], aqmode: ['encoder', 'libx264'], motionest: ['encoder', 'libx264'], bpyramid: ['encoder', 'libx264'], weightp: ['encoder', 'libx264'], coder: ['encoder', 'libx264'], nalhrd: ['encoder', 'libx264'], x264params: ['encoder', 'libx264'],
+    scaleflags: ['filter', 'scale'], foar: ['filter', 'scale'], alpha: ['filter', 'drawtext'], lufsI: ['filter', 'loudnorm'], lra: ['filter', 'loudnorm'], tp: ['filter', 'loudnorm'], giffps: ['filter', 'fps'], gifcolors: ['filter', 'palettegen'], statsmode: ['filter', 'palettegen'], gifdither: ['filter', 'paletteuse'],
+    nvencpreset: ['encoder', 'h264_nvenc'], nvenctune: ['encoder', 'h264_nvenc'], nvencrc: ['encoder', 'h264_nvenc'], cq: ['encoder', 'h264_nvenc'],
+    hlstime: ['muxer', 'hls'], hlslist: ['muxer', 'hls'], segtype: ['muxer', 'hls'], hlsflags: ['muxer', 'hls']
+  };
+  Object.entries(HELP_TARGETS).forEach(([id, target]) => { if (DOCS[id]) DOCS[id].runtimeHelp = { kind: target[0], name: target[1] }; });
   window.OPTION_DOCS = DOCS;
 
   const st = window.state || {};
   st.hlsFlagsArr = st.hlsFlagsArr || ['delete_segments', 'independent_segments', 'program_date_time'];
   st.x264ParamsArr = st.x264ParamsArr || ['keyint=48', 'min-keyint=48', 'scenecut=0'];
 
+  const makeNode = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = boundedText(text, RUNTIME_LIMITS.help);
+    return node;
+  };
+  const renderDocRuntimeHelp = (host, entry, state) => {
+    if (!host || !entry.runtimeHelp) return;
+    host.replaceChildren();
+    const heading = makeNode('p', 'field', `Bundled FFmpeg help · ${entry.runtimeHelp.kind}:${entry.runtimeHelp.name}`);
+    heading.style.margin = '0 0 6px'; host.append(heading);
+    if (state.status === 'loading') {
+      const loading = makeNode('div', 'notice', 'Loading help from the bundled FFmpeg build…');
+      loading.setAttribute('role', 'status'); host.append(loading); return;
+    }
+    if (state.status === 'ready') {
+      const pre = makeNode('pre', 'cmd-pre', state.text);
+      pre.style.fontSize = '11px'; pre.style.maxHeight = '260px'; pre.style.overflow = 'auto'; pre.style.whiteSpace = 'pre-wrap';
+      host.append(pre);
+      if (state.truncated) host.append(makeNode('small', '', `Help output was limited to ${RUNTIME_LIMITS.help.toLocaleString()} characters.`));
+    } else if (state.status === 'empty') {
+      const empty = makeNode('div', 'notice', 'The bundled FFmpeg build returned no help text for this entry.');
+      empty.setAttribute('role', 'status'); host.append(empty);
+    } else if (state.status === 'error' || state.status === 'unavailable') {
+      const error = makeNode('div', 'notice', state.error || 'Bundled FFmpeg help is unavailable.');
+      error.setAttribute('role', 'alert'); host.append(error);
+    } else {
+      host.append(makeNode('small', '', 'Static guidance does not prove availability. Read the bundled build help for the authoritative installed options.'));
+    }
+    const button = makeNode('button', 'doc-runtime-load outlined', state.status === 'ready' ? 'Refresh bundled help' : 'Read bundled help');
+    button.type = 'button'; button.style.marginTop = '8px'; button.style.padding = '7px 12px'; host.append(button);
+  };
+
   let panel = null;
+  let catalogPanel = null;
+  const closeCatalogPanel = () => { if (catalogPanel) { catalogPanel.remove(); catalogPanel = null; } };
   window.openDoc = function openDoc(id) {
     const e = DOCS[id]; if (!e) return;
+    closeCatalogPanel();
     if (panel) panel.remove();
     const cur = e.stateKey != null ? st[e.stateKey] : undefined;
     let sel = e.kind === 'enum' ? (cur ?? e.values[0][0]) : null;
@@ -55,7 +193,10 @@
     let boolV = e.kind === 'bool' ? (cur ?? true) : true;
     let items = e.kind === 'array' ? [...(st[e.arrKey] || [])] : [];
     let selSet = new Set();
+    let runtimeHelpState = { status: 'idle', text: '', error: '', truncated: false };
     panel = document.createElement('div');
+    const ownPanel = panel;
+    let runtimeRequest = 0;
     panel.style.cssText = 'position:fixed;left:460px;top:70px;z-index:70;width:min(500px,calc(100vw - 40px))';
     const previewVal = () => e.kind === 'enum' ? sel : e.kind === 'num' ? val : e.kind === 'array' ? items : boolV;
     const draw = () => {
@@ -67,8 +208,9 @@
           <button class="doc-close icon-button">×</button></div>
         <div style="padding:16px 18px;overflow:auto;display:grid;gap:14px">
           <p style="margin:0;font-size:13px;line-height:1.6">${escg(e.body)}</p>
+          <div class="notice">Reference guidance only. The bundled FFmpeg build is authoritative for installed availability and accepted options.</div>
           ${e.note ? `<div class="notice">${escg(e.note)}</div>` : ''}
-          ${e.kind === 'enum' ? `<div><p class="field" style="margin:0 0 6px">Accepted values — pick one</p>
+          ${e.kind === 'enum' ? `<div><p class="field" style="margin:0 0 6px">Guided reference values — pick one</p>
             <div style="display:flex;gap:5px;margin-bottom:8px"><input class="doc-search" placeholder="Search values" value="${escg(q)}" style="width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:11px;color:var(--text);padding:9px 12px"><button class="builder-button doc-rx">.*</button></div>
             <div role="listbox" style="display:grid;gap:4px;max-height:220px;overflow:auto">${e.values.filter(([v, d]) => !q || (v + ' ' + d).toLowerCase().includes(q.toLowerCase())).map(([v, d]) => `<button class="doc-val" data-v="${escg(v)}" style="border:1px solid ${v === sel ? 'var(--accent)' : 'var(--line)'};background:${v === sel ? 'var(--tonal)' : 'var(--surface2)'};text-align:left;display:flex;gap:10px;align-items:center;padding:9px 12px;border-radius:11px;color:var(--text)"><span style="width:14px;height:14px;border-radius:50%;border:2px solid ${v === sel ? 'var(--accent)' : 'var(--line)'};background:${v === sel ? 'var(--accent)' : 'transparent'};flex:none"></span><span><b class="mono" style="font-size:12.5px">${escg(v)}</b><br><small style="color:var(--muted);font-size:11px">${escg(d)}</small></span></button>`).join('')}</div></div>` : ''}
           ${e.kind === 'num' ? `<div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span class="field">Value</span><span style="display:flex;gap:6px;align-items:center"><button class="doc-dn builder-button" style="min-width:28px;height:28px">−</button><b class="mono" style="color:var(--accent);font-size:15px;min-width:52px;text-align:center">${val}${e.unit || ''}</b><button class="doc-up builder-button" style="min-width:28px;height:28px">+</button></span></div>
@@ -82,13 +224,26 @@
             <div style="display:flex;gap:5px;margin-bottom:8px"><input class="doc-search" placeholder="Search items" value="${escg(q)}" style="width:100%;background:var(--surface2);border:1px solid var(--line);border-radius:11px;color:var(--text);padding:9px 12px"><button class="builder-button doc-rx">.*</button></div>
             <div role="listbox" style="display:grid;gap:4px;max-height:180px;overflow:auto;margin-bottom:8px">${items.filter((v) => !q || v.toLowerCase().includes(q.toLowerCase())).map((v) => `<div style="display:flex;gap:10px;align-items:center;padding:8px 12px;border-radius:10px;background:var(--surface2)"><input type="checkbox" class="doc-sel" data-v="${escg(v)}"${selSet.has(v) ? ' checked' : ''}><b class="mono" style="flex:1;font-size:12.5px">${escg(v)}</b><button class="doc-del" data-v="${escg(v)}" style="color:var(--danger);padding:2px 6px;font-size:15px">×</button></div>`).join('')}</div>
             <div style="display:flex;gap:6px;flex-wrap:wrap"><button class="doc-selall outlined" style="padding:5px 12px;font-size:11.5px">Select all</button><button class="doc-selnone outlined" style="padding:5px 12px;font-size:11.5px">Clear selection</button><button class="doc-rmsel" style="color:var(--danger);padding:5px 12px;font-size:11.5px;font-weight:600">Remove selected</button></div></div>` : ''}
+          ${e.runtimeHelp ? '<div class="doc-runtime-help"></div>' : ''}
           <div><p class="field" style="margin:0 0 6px">Live preview — command fragment</p><pre class="cmd-pre" style="font-size:11.5px">${escg(e.preview(previewVal()))}</pre></div>
         </div>
         <div style="display:flex;justify-content:space-between;gap:8px;padding:12px 18px;border-top:1px solid var(--line)">
           <small style="color:var(--muted);align-self:center">Closes only via Cancel, Apply, or ×</small>
           <div style="display:flex;gap:8px"><button class="doc-cancel tonal" style="padding:9px 16px">Cancel</button><button class="doc-apply filled" style="padding:9px 16px">Apply to command</button></div></div></div>`;
+      const runtimeHost = $g('.doc-runtime-help', panel);
+      renderDocRuntimeHelp(runtimeHost, e, runtimeHelpState);
+      const runtimeLoad = $g('.doc-runtime-load', panel);
+      if (runtimeLoad) runtimeLoad.onclick = async () => {
+        if (runtimeHelpState.status === 'loading') return;
+        const refresh = runtimeHelpState.status === 'ready' || runtimeHelpState.status === 'empty' || runtimeHelpState.status === 'error';
+        const request = ++runtimeRequest;
+        runtimeHelpState = { status: 'loading', text: '', error: '', truncated: false }; draw();
+        const result = await runtimeCatalog.help(e.runtimeHelp.kind, e.runtimeHelp.name, { refresh });
+        if (panel !== ownPanel || request !== runtimeRequest) return;
+        runtimeHelpState = result; draw();
+      };
       // wire
-      const close = () => { panel.remove(); panel = null; };
+      const close = () => { runtimeRequest += 1; if (panel === ownPanel) { panel.remove(); panel = null; } };
       $g('.doc-close', panel).onclick = close; $g('.doc-cancel', panel).onclick = close;
       $g('.doc-apply', panel).onclick = () => {
         if (e.stateKey != null) st[e.stateKey] = e.kind === 'enum' ? sel : e.kind === 'num' ? val : boolV;
@@ -123,6 +278,171 @@
     draw();
     document.body.append(panel);
   };
+
+  // Runtime-derived catalogs remain separate from the static guide above. The bridge output is
+  // bounded and rendered with textContent so a tool name or help line can never become markup.
+  function openRuntimeCatalog(options = {}) {
+    const config = typeof options === 'string' ? { kind: options } : (options || {});
+    let kind;
+    try { kind = validCatalogToken(config.kind || 'filters', 'Catalog kind'); } catch (error) {
+      return runtimeCatalog.list(config.kind || '', { limit: 1 });
+    }
+    if (panel) { panel.remove(); panel = null; }
+    closeCatalogPanel();
+    let listState = { status: 'loading', items: [], total: 0, truncated: false };
+    let helpState = { status: 'idle', text: '', error: '', truncated: false };
+    let selected = null;
+    let query = boundedText(config.query || '', 256);
+    let listRequest = 0;
+    let helpRequest = 0;
+
+    catalogPanel = document.createElement('div');
+    const ownPanel = catalogPanel;
+    ownPanel.className = 'option-catalog-panel';
+    ownPanel.setAttribute('role', 'dialog');
+    ownPanel.setAttribute('aria-modal', 'false');
+    ownPanel.setAttribute('aria-label', 'Bundled FFmpeg catalog');
+    ownPanel.style.cssText = 'position:fixed;left:clamp(16px,28vw,420px);top:56px;z-index:75;width:min(700px,calc(100vw - 32px));max-height:calc(100vh - 72px);background:var(--surface);border:1px solid var(--accent);border-radius:18px;box-shadow:0 24px 80px #000c;display:flex;flex-direction:column;overflow:hidden';
+
+    const head = makeNode('div', 'doc-drag');
+    head.style.cssText = 'cursor:move;padding:14px 18px 12px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:12px;align-items:center';
+    const headCopy = makeNode('div');
+    const eyebrow = makeNode('p', 'eyebrow', 'Bundled FFmpeg runtime catalog'); eyebrow.style.margin = '0 0 3px';
+    const title = makeNode('h2', 'mono', boundedText(config.title || `${kind} catalog`, 120)); title.style.cssText = 'margin:0;font-size:18px';
+    const kindTag = makeNode('span', 'tag idle mono', kind); kindTag.style.marginLeft = '8px'; title.append(kindTag);
+    headCopy.append(eyebrow, title);
+    const closeButton = makeNode('button', 'icon-button', '×'); closeButton.type = 'button'; closeButton.title = 'Close runtime catalog';
+    head.append(headCopy, closeButton);
+
+    const controls = makeNode('div'); controls.style.cssText = 'padding:12px 18px;border-bottom:1px solid var(--line);display:flex;gap:6px;align-items:center';
+    const search = makeNode('input', 'runtime-catalog-search'); search.type = 'search'; search.placeholder = 'Search runtime entries'; search.value = query;
+    search.style.cssText = 'flex:1;min-width:0;background:var(--surface2);border:1px solid var(--line);border-radius:11px;color:var(--text);padding:9px 12px';
+    const regex = makeNode('button', 'builder-button', '.*'); regex.type = 'button'; regex.title = 'Open regex builder';
+    const refresh = makeNode('button', 'outlined', 'Refresh'); refresh.type = 'button'; refresh.style.padding = '8px 12px';
+    controls.append(search, regex, refresh);
+
+    const body = makeNode('div'); body.style.cssText = 'padding:14px 18px 18px;overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px';
+    const listColumn = makeNode('section');
+    const listSummary = makeNode('p', 'field', 'Runtime entries'); listSummary.style.margin = '0 0 8px';
+    const listHost = makeNode('div', 'runtime-catalog-list'); listHost.style.cssText = 'display:grid;gap:4px;max-height:430px;overflow:auto';
+    listHost.setAttribute('role', 'listbox'); listHost.setAttribute('aria-live', 'polite');
+    listColumn.append(listSummary, listHost);
+    const detailColumn = makeNode('section');
+    const detailSummary = makeNode('p', 'field', 'Bundled help'); detailSummary.style.margin = '0 0 8px';
+    const detailHost = makeNode('div', 'runtime-catalog-detail'); detailHost.style.cssText = 'display:grid;gap:8px;min-width:0';
+    detailHost.setAttribute('aria-live', 'polite');
+    detailColumn.append(detailSummary, detailHost); body.append(listColumn, detailColumn);
+    ownPanel.append(head, controls, body); document.body.append(ownPanel);
+
+    const isCurrent = () => catalogPanel === ownPanel;
+    const close = () => {
+      listRequest += 1; helpRequest += 1;
+      if (isCurrent()) closeCatalogPanel();
+    };
+    const renderDetail = () => {
+      detailHost.replaceChildren();
+      if (!selected) {
+        detailHost.append(makeNode('div', 'notice', 'Select a runtime entry to request its bundled FFmpeg help.'));
+        return;
+      }
+      const selectedName = makeNode('h3', 'mono', selected.name); selectedName.style.cssText = 'margin:0;font-size:15px'; detailHost.append(selectedName);
+      if (selected.description) { const description = makeNode('p', '', selected.description); description.style.cssText = 'margin:0;color:var(--muted);font-size:12px;line-height:1.5'; detailHost.append(description); }
+      if (helpState.status === 'loading') {
+        const loading = makeNode('div', 'notice', 'Loading bundled FFmpeg help…'); loading.setAttribute('role', 'status'); detailHost.append(loading);
+      } else if (helpState.status === 'ready') {
+        const pre = makeNode('pre', 'cmd-pre', helpState.text); pre.style.cssText = 'font-size:11px;max-height:330px;overflow:auto;white-space:pre-wrap'; detailHost.append(pre);
+        if (helpState.truncated) detailHost.append(makeNode('small', '', `Help output was limited to ${RUNTIME_LIMITS.help.toLocaleString()} characters.`));
+      } else if (helpState.status === 'empty') {
+        detailHost.append(makeNode('div', 'notice', 'The bundled FFmpeg build returned no help text for this entry.'));
+      } else if (helpState.status === 'error' || helpState.status === 'unavailable') {
+        const failure = makeNode('div', 'notice', helpState.error || 'Bundled FFmpeg help is unavailable.'); failure.setAttribute('role', 'alert'); detailHost.append(failure);
+      }
+      const actions = makeNode('div'); actions.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
+      const retry = makeNode('button', 'outlined', helpState.status === 'ready' ? 'Refresh help' : 'Retry help'); retry.type = 'button'; retry.style.padding = '7px 12px';
+      retry.onclick = () => loadHelp(selected, true);
+      actions.append(retry);
+      if (typeof config.onSelect === 'function' || config.emitSelection !== false) {
+        const use = makeNode('button', 'filled', boundedText(config.useLabel || 'Use selected entry', 80)); use.type = 'button'; use.style.padding = '7px 12px';
+        use.onclick = async () => {
+          use.disabled = true;
+          try {
+            const detail = { kind, item: { ...selected }, help: helpState.status === 'ready' ? helpState.text : '' };
+            if (typeof config.onSelect === 'function') await config.onSelect(detail);
+            if (config.emitSelection !== false) window.dispatchEvent(new CustomEvent('option-guide:catalog-select', { detail }));
+            if (config.closeOnSelect !== false) close(); else use.disabled = false;
+          } catch (error) {
+            helpState = { status: 'error', text: '', error: runtimeErrorText(error), truncated: false }; renderDetail();
+          }
+        };
+        actions.append(use);
+      }
+      detailHost.append(actions);
+    };
+    const loadHelp = async (item, forceRefresh = false) => {
+      selected = item; helpState = { status: 'loading', text: '', error: '', truncated: false }; renderList(); renderDetail();
+      const request = ++helpRequest;
+      const result = await runtimeCatalog.help(kind, item.name, { refresh: forceRefresh });
+      if (!isCurrent() || request !== helpRequest || selected !== item) return;
+      helpState = result; renderDetail();
+    };
+    const renderList = () => {
+      listHost.replaceChildren();
+      if (listState.status === 'loading') {
+        const loading = makeNode('div', 'notice', 'Loading entries from the bundled FFmpeg build…'); loading.setAttribute('role', 'status'); listHost.append(loading); return;
+      }
+      if (listState.status === 'error' || listState.status === 'unavailable') {
+        const failure = makeNode('div', 'notice', listState.error || 'The bundled FFmpeg catalog is unavailable.'); failure.setAttribute('role', 'alert'); listHost.append(failure); return;
+      }
+      const needle = query.trim().toLocaleLowerCase();
+      const visible = listState.items.filter((item) => !needle || `${item.name} ${item.description}`.toLocaleLowerCase().includes(needle));
+      if (!visible.length) {
+        listHost.append(makeNode('div', 'notice', listState.status === 'empty' ? 'The bundled FFmpeg build returned no entries for this catalog.' : 'No runtime entries match this search.'));
+      } else {
+        visible.forEach((item) => {
+          const button = makeNode('button', 'runtime-catalog-item'); button.type = 'button'; button.setAttribute('role', 'option'); button.setAttribute('aria-selected', selected === item ? 'true' : 'false');
+          button.style.cssText = `border:1px solid ${selected === item ? 'var(--accent)' : 'var(--line)'};background:${selected === item ? 'var(--tonal)' : 'var(--surface2)'};text-align:left;padding:9px 11px;border-radius:10px;color:var(--text);min-width:0`;
+          const name = makeNode('b', 'mono', item.name); name.style.cssText = 'display:block;font-size:12.5px;overflow-wrap:anywhere'; button.append(name);
+          if (item.description) { const description = makeNode('small', '', item.description); description.style.cssText = 'display:block;color:var(--muted);font-size:11px;line-height:1.35;margin-top:2px;overflow-wrap:anywhere'; button.append(description); }
+          button.onclick = () => loadHelp(item); listHost.append(button);
+        });
+      }
+      const count = makeNode('small', '', `${visible.length} shown · ${listState.items.length} loaded${listState.total > listState.items.length ? ` · ${listState.total} reported` : ''}`); count.style.color = 'var(--muted)'; listHost.append(count);
+      if (listState.truncated) listHost.append(makeNode('small', '', `Results were limited to ${RUNTIME_LIMITS.results} entries.`));
+    };
+    const loadList = async (forceRefresh = false) => {
+      selected = null; helpState = { status: 'idle', text: '', error: '', truncated: false }; listState = { status: 'loading', items: [], total: 0, truncated: false }; renderList(); renderDetail();
+      const request = ++listRequest;
+      const result = await runtimeCatalog.list(kind, { limit: RUNTIME_LIMITS.results, refresh: forceRefresh });
+      if (!isCurrent() || request !== listRequest) return;
+      listState = result; renderList(); renderDetail();
+    };
+
+    closeButton.onclick = close;
+    search.oninput = () => { query = boundedText(search.value, 256); if (search.value !== query) search.value = query; renderList(); };
+    regex.onclick = () => window.openRegex && window.openRegex();
+    refresh.onclick = () => loadList(true);
+    ownPanel.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); close(); } });
+    head.onmousedown = (event) => {
+      if (event.target.closest('button')) return;
+      const startX = event.clientX - ownPanel.offsetLeft; const startY = event.clientY - ownPanel.offsetTop;
+      const move = (next) => { ownPanel.style.left = Math.max(8, Math.min(innerWidth - ownPanel.offsetWidth - 8, next.clientX - startX)) + 'px'; ownPanel.style.top = Math.max(8, Math.min(innerHeight - 80, next.clientY - startY)) + 'px'; };
+      const stop = () => { removeEventListener('mousemove', move); removeEventListener('mouseup', stop); };
+      addEventListener('mousemove', move); addEventListener('mouseup', stop);
+    };
+    renderList(); renderDetail(); loadList(); setTimeout(() => { if (isCurrent()) search.focus(); }, 0);
+    return ownPanel;
+  }
+
+  window.openOptionCatalog = openRuntimeCatalog;
+  window.optionGuides = Object.freeze({
+    docs: DOCS,
+    limits: RUNTIME_LIMITS,
+    list: (kind, options) => runtimeCatalog.list(kind, options),
+    help: (kind, name, options) => runtimeCatalog.help(kind, name, options),
+    openCatalog: openRuntimeCatalog,
+    close: () => { if (panel) { panel.remove(); panel = null; } closeCatalogPanel(); },
+    clearCache: () => runtimeCatalog.clearCache()
+  });
 
   // ---- inject ⓘ buttons next to known controls after every render ----
   const LABEL_MAP = [['crf —', 'crf'], ['crf_max', 'crfMax'], ['rc-lookahead', 'lookahead'], ['tune — content', 'tune'], ['profile —', 'profile'], ['level —', 'level'], ['aq-mode', 'aqmode'], ['motion-est', 'motionest'], ['b-pyramid', 'bpyramid'], ['weightp', 'weightp'], ['coder', 'coder'], ['nal-hrd', 'nalhrd'], ['flags — scaler', 'scaleflags'], ['force_original', 'foar'], ['alpha —', 'alpha'], ['I — integrated', 'lufsI'], ['LRA —', 'lra'], ['TP —', 'tp'], ['fps', 'giffps'], ['palettegen max_colors', 'gifcolors'], ['paletteuse dither', 'gifdither'], ['palettegen stats_mode', 'statsmode'], ['rc — rate', 'nvencrc'], ['cq —', 'cq'], ['hls_time', 'hlstime'], ['hls_list_size', 'hlslist'], ['hls_segment_type', 'segtype']];

@@ -316,25 +316,198 @@
     return freezeArgv(args);
   }
 
-  const FILTERGRAPH_KEYS = new Set(['input', 'output', 'overwrite', 'progress', 'start', 'duration', 'maps', 'videoGraph', 'audioGraph', 'complexGraph', 'videoCodec', 'audioCodec', 'crf', 'preset', 'audioBitrate', 'pixelFormat', 'shortest']);
+  const FILTERGRAPH_CATALOG = Object.freeze({
+    video: Object.freeze({
+      scale: Object.freeze({
+        label: 'Scale',
+        defaults: Object.freeze({ width: 1920, height: -2, flags: 'lanczos' }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'width', label: 'Width', type: 'number', min: -2, max: 32768, step: 1 }),
+          Object.freeze({ key: 'height', label: 'Height', type: 'number', min: -2, max: 32768, step: 1 }),
+          Object.freeze({ key: 'flags', label: 'Scaler', type: 'select', values: Object.freeze([...SCALERS]) }),
+        ]),
+      }),
+      crop: Object.freeze({
+        label: 'Crop',
+        defaults: Object.freeze({ width: 1280, height: 720, x: 0, y: 0 }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'width', label: 'Width', type: 'number', min: 2, max: 32768, step: 1 }),
+          Object.freeze({ key: 'height', label: 'Height', type: 'number', min: 2, max: 32768, step: 1 }),
+          Object.freeze({ key: 'x', label: 'Left offset', type: 'number', min: 0, max: 32768, step: 1 }),
+          Object.freeze({ key: 'y', label: 'Top offset', type: 'number', min: 0, max: 32768, step: 1 }),
+        ]),
+      }),
+      fps: Object.freeze({
+        label: 'Frame rate',
+        defaults: Object.freeze({ rate: '24000/1001' }),
+        fields: Object.freeze([Object.freeze({ key: 'rate', label: 'Rate', type: 'text', placeholder: '24000/1001' })]),
+      }),
+      eq: Object.freeze({
+        label: 'Picture adjustment',
+        defaults: Object.freeze({ brightness: 0, contrast: 1, saturation: 1, gamma: 1 }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'brightness', label: 'Brightness', type: 'number', min: -1, max: 1, step: 0.01 }),
+          Object.freeze({ key: 'contrast', label: 'Contrast', type: 'number', min: 0, max: 2, step: 0.01 }),
+          Object.freeze({ key: 'saturation', label: 'Saturation', type: 'number', min: 0, max: 3, step: 0.01 }),
+          Object.freeze({ key: 'gamma', label: 'Gamma', type: 'number', min: 0.1, max: 10, step: 0.01 }),
+        ]),
+      }),
+      curves: Object.freeze({
+        label: 'Color curve preset',
+        defaults: Object.freeze({ preset: 'medium_contrast' }),
+        fields: Object.freeze([Object.freeze({
+          key: 'preset', label: 'Preset', type: 'select', values: Object.freeze([
+            'color_negative', 'cross_process', 'darker', 'increase_contrast', 'lighter',
+            'linear_contrast', 'medium_contrast', 'negative', 'strong_contrast', 'vintage',
+          ]),
+        })]),
+      }),
+      drawtext: Object.freeze({
+        label: 'Text overlay',
+        defaults: Object.freeze({ text: 'Caption', fontSize: 48, x: 'center', y: 'bottom', fontColor: 'white', box: true, boxColor: 'black' }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'text', label: 'Text', type: 'text', maxLength: 200, placeholder: 'Caption' }),
+          Object.freeze({ key: 'fontSize', label: 'Font size', type: 'number', min: 8, max: 512, step: 1 }),
+          Object.freeze({ key: 'x', label: 'Horizontal position', type: 'select', values: Object.freeze(['left', 'center', 'right']) }),
+          Object.freeze({ key: 'y', label: 'Vertical position', type: 'select', values: Object.freeze(['top', 'middle', 'bottom']) }),
+          Object.freeze({ key: 'fontColor', label: 'Text color', type: 'select', values: Object.freeze(['white', 'black', 'yellow', 'red', 'green', 'blue']) }),
+          Object.freeze({ key: 'box', label: 'Background box', type: 'checkbox' }),
+          Object.freeze({ key: 'boxColor', label: 'Box color', type: 'select', values: Object.freeze(['black', 'white', 'yellow', 'red', 'green', 'blue']) }),
+        ]),
+      }),
+      unsharp: Object.freeze({
+        label: 'Sharpen or soften',
+        defaults: Object.freeze({ amount: 1, chromaAmount: 0 }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'amount', label: 'Luma amount', type: 'number', min: -2, max: 5, step: 0.1 }),
+          Object.freeze({ key: 'chromaAmount', label: 'Chroma amount', type: 'number', min: -2, max: 5, step: 0.1 }),
+        ]),
+      }),
+    }),
+    audio: Object.freeze({
+      loudnorm: Object.freeze({
+        label: 'Loudness normalization',
+        defaults: Object.freeze({ integrated: -16, lra: 11, truePeak: -1.5 }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'integrated', label: 'Integrated loudness (LUFS)', type: 'number', min: -70, max: -5, step: 0.1 }),
+          Object.freeze({ key: 'lra', label: 'Loudness range', type: 'number', min: 1, max: 50, step: 0.1 }),
+          Object.freeze({ key: 'truePeak', label: 'True peak (dBTP)', type: 'number', min: -9, max: 0, step: 0.1 }),
+        ]),
+      }),
+      atempo: Object.freeze({
+        label: 'Tempo',
+        defaults: Object.freeze({ tempo: 1 }),
+        fields: Object.freeze([Object.freeze({ key: 'tempo', label: 'Tempo multiplier', type: 'number', min: 0.5, max: 100, step: 0.01 })]),
+      }),
+    }),
+  });
+
+  const FILTERGRAPH_NODE_KEYS = new Set(['kind', 'name', 'options']);
+  const FILTERGRAPH_OPTION_KEYS = Object.freeze({
+    scale: new Set(['width', 'height', 'flags']),
+    crop: new Set(['width', 'height', 'x', 'y']),
+    fps: new Set(['rate']),
+    eq: new Set(['brightness', 'contrast', 'saturation', 'gamma']),
+    curves: new Set(['preset']),
+    drawtext: new Set(['text', 'fontSize', 'x', 'y', 'fontColor', 'box', 'boxColor']),
+    unsharp: new Set(['amount', 'chromaAmount']),
+    loudnorm: new Set(['integrated', 'lra', 'truePeak']),
+    atempo: new Set(['tempo']),
+  });
+  const FILTERGRAPH_CURVE_PRESETS = new Set(FILTERGRAPH_CATALOG.video.curves.fields[0].values);
+  const FILTERGRAPH_COLORS = new Set(['white', 'black', 'yellow', 'red', 'green', 'blue']);
+
+  function filtergraphDimension(value, field) {
+    if (value === -1 || value === -2) return value;
+    return number(value, undefined, 2, 32768, field, true);
+  }
+
+  function filtergraphText(value, field) {
+    const result = token(value, field, { maxLength: 200, allowLeadingDash: true });
+    if (!/^[\p{L}\p{N} .!?()_+\-]{1,200}$/u.test(result)) {
+      fail(field, 'may contain letters, numbers, spaces, and . ! ? ( ) _ + - only');
+    }
+    return result;
+  }
+
+  function compileFiltergraphNode(value, index) {
+    const field = `nodes[${index}]`;
+    const node = object(value, field, FILTERGRAPH_NODE_KEYS);
+    const kind = enumValue(node.kind, undefined, new Set(['video', 'audio']), `${field}.kind`);
+    const definitions = FILTERGRAPH_CATALOG[kind];
+    const name = enumValue(node.name, undefined, new Set(Object.keys(definitions)), `${field}.name`);
+    const options = object(node.options, `${field}.options`, FILTERGRAPH_OPTION_KEYS[name]);
+    let expression;
+
+    if (name === 'scale') {
+      const width = filtergraphDimension(options.width, `${field}.options.width`);
+      const height = filtergraphDimension(options.height, `${field}.options.height`);
+      const flags = enumValue(options.flags, undefined, SCALERS, `${field}.options.flags`);
+      expression = `scale=${width}:${height}:flags=${flags}`;
+    } else if (name === 'crop') {
+      const width = requiredNumber(options.width, 2, 32768, `${field}.options.width`, true);
+      const height = requiredNumber(options.height, 2, 32768, `${field}.options.height`, true);
+      const x = requiredNumber(options.x, 0, 32768, `${field}.options.x`, true);
+      const y = requiredNumber(options.y, 0, 32768, `${field}.options.y`, true);
+      expression = `crop=${width}:${height}:${x}:${y}`;
+    } else if (name === 'fps') {
+      expression = `fps=${rational(options.rate, undefined, `${field}.options.rate`)}`;
+    } else if (name === 'eq') {
+      const brightness = requiredNumber(options.brightness, -1, 1, `${field}.options.brightness`, false);
+      const contrast = requiredNumber(options.contrast, 0, 2, `${field}.options.contrast`, false);
+      const saturation = requiredNumber(options.saturation, 0, 3, `${field}.options.saturation`, false);
+      const gamma = requiredNumber(options.gamma, 0.1, 10, `${field}.options.gamma`, false);
+      expression = `eq=brightness=${brightness}:contrast=${contrast}:saturation=${saturation}:gamma=${gamma}`;
+    } else if (name === 'curves') {
+      expression = `curves=preset=${enumValue(options.preset, undefined, FILTERGRAPH_CURVE_PRESETS, `${field}.options.preset`)}`;
+    } else if (name === 'drawtext') {
+      const x = enumValue(options.x, undefined, new Set(['left', 'center', 'right']), `${field}.options.x`);
+      const y = enumValue(options.y, undefined, new Set(['top', 'middle', 'bottom']), `${field}.options.y`);
+      const xValue = { left: '10', center: '(w-text_w)/2', right: 'w-text_w-10' }[x];
+      const yValue = { top: '10', middle: '(h-text_h)/2', bottom: 'h-text_h-10' }[y];
+      const fontColor = enumValue(options.fontColor, undefined, FILTERGRAPH_COLORS, `${field}.options.fontColor`);
+      const boxColor = enumValue(options.boxColor, undefined, FILTERGRAPH_COLORS, `${field}.options.boxColor`);
+      const box = boolean(options.box, true, `${field}.options.box`);
+      expression = `drawtext=text='${filtergraphText(options.text, `${field}.options.text`)}':fontsize=${requiredNumber(options.fontSize, 8, 512, `${field}.options.fontSize`, true)}:fontcolor=${fontColor}:x=${xValue}:y=${yValue}:box=${box ? 1 : 0}:boxcolor=${boxColor}@0.75`;
+    } else if (name === 'unsharp') {
+      const amount = requiredNumber(options.amount, -2, 5, `${field}.options.amount`, false);
+      const chromaAmount = requiredNumber(options.chromaAmount, -2, 5, `${field}.options.chromaAmount`, false);
+      expression = `unsharp=5:5:${amount}:5:5:${chromaAmount}`;
+    } else if (name === 'loudnorm') {
+      const integrated = requiredNumber(options.integrated, -70, -5, `${field}.options.integrated`, false);
+      const lra = requiredNumber(options.lra, 1, 50, `${field}.options.lra`, false);
+      const truePeak = requiredNumber(options.truePeak, -9, 0, `${field}.options.truePeak`, false);
+      expression = `loudnorm=I=${integrated}:LRA=${lra}:TP=${truePeak}`;
+    } else if (name === 'atempo') {
+      expression = `atempo=${requiredNumber(options.tempo, 0.5, 100, `${field}.options.tempo`, false)}`;
+    }
+
+    return { kind, expression };
+  }
+
+  function compileFiltergraphNodes(value) {
+    if (!Array.isArray(value) || value.length === 0 || value.length > 64) fail('nodes', 'must contain between 1 and 64 ordered filter nodes');
+    return value.map(compileFiltergraphNode);
+  }
+
+  const FILTERGRAPH_KEYS = new Set(['input', 'output', 'overwrite', 'progress', 'start', 'duration', 'maps', 'nodes', 'videoCodec', 'audioCodec', 'crf', 'preset', 'audioBitrate', 'pixelFormat', 'shortest']);
   function filtergraph(inputSpec) {
     const spec = object(inputSpec, 'filtergraph', FILTERGRAPH_KEYS);
-    const graphCount = [spec.videoGraph, spec.audioGraph, spec.complexGraph].filter((entry) => entry !== undefined).length;
-    if (!graphCount) fail('filtergraph', 'requires videoGraph, audioGraph, or complexGraph');
-    if (spec.complexGraph !== undefined && (spec.videoGraph !== undefined || spec.audioGraph !== undefined)) fail('filtergraph', 'complexGraph cannot be combined with videoGraph or audioGraph');
+    const nodes = compileFiltergraphNodes(spec.nodes);
+    const videoGraph = nodes.filter((node) => node.kind === 'video').map((node) => node.expression).join(',');
+    const audioGraph = nodes.filter((node) => node.kind === 'audio').map((node) => node.expression).join(',');
     const args = commonArgs(spec);
     addTimingBeforeInput(args, spec);
     args.push('-i', localPath(spec.input, 'input'));
     addTimingAfterInput(args, spec);
-    if (spec.complexGraph !== undefined) args.push('-filter_complex', filter(spec.complexGraph, 'complexGraph'));
-    if (spec.videoGraph !== undefined) args.push('-vf', filter(spec.videoGraph, 'videoGraph'));
-    if (spec.audioGraph !== undefined) args.push('-af', filter(spec.audioGraph, 'audioGraph'));
+    if (videoGraph) args.push('-vf', videoGraph);
+    if (audioGraph) args.push('-af', audioGraph);
     addMaps(args, spec.maps);
     const videoCodec = codec(spec.videoCodec, 'libx264', VIDEO_CODECS, 'videoCodec', true);
     const audioCodec = codec(spec.audioCodec, 'aac', AUDIO_CODECS, 'audioCodec', true);
     if (videoCodec === 'none' && audioCodec === 'none') fail('codecs', 'at least one output stream must be enabled');
-    if (videoCodec === 'copy' && (spec.videoGraph !== undefined || spec.complexGraph !== undefined)) fail('videoCodec', 'cannot copy video while applying a video or complex filtergraph');
-    if (audioCodec === 'copy' && (spec.audioGraph !== undefined || spec.complexGraph !== undefined)) fail('audioCodec', 'cannot copy audio while applying an audio or complex filtergraph');
+    if (videoCodec === 'copy' && videoGraph) fail('videoCodec', 'cannot copy video while applying video filter nodes');
+    if (audioCodec === 'copy' && audioGraph) fail('audioCodec', 'cannot copy audio while applying audio filter nodes');
     if (videoCodec === 'none') args.push('-vn');
     else args.push('-c:v', videoCodec);
     if (audioCodec === 'none') args.push('-an');
@@ -768,6 +941,7 @@
   const api = Object.freeze({
     version: API_VERSION,
     adapters: ADAPTERS,
+    filtergraphCatalog: FILTERGRAPH_CATALOG,
     build,
     convert,
     trim,

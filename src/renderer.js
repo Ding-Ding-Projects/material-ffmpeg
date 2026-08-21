@@ -104,6 +104,55 @@ const normalizeSettings = (value) => {
   });
 };
 
+const filtergraphCatalog = window.FFmpegCommandBuilders?.filtergraphCatalog || {};
+const filterDefinition = (kind, name) => filtergraphCatalog?.[kind]?.[name] || null;
+const defaultFilterOptions = (kind, name) => Object.assign({}, filterDefinition(kind, name)?.defaults || {});
+const legacyFilterOptions = (kind, name, value) => {
+  if (typeof value !== 'string') return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const text = value.trim();
+  let match;
+  if (kind === 'video' && name === 'scale' && (match = /^(-?\d+):(-?\d+)(?::flags=([a-z_]+))?$/u.exec(text))) {
+    return { width: Number(match[1]), height: Number(match[2]), flags: match[3] || 'lanczos' };
+  }
+  if (kind === 'video' && name === 'crop' && (match = /^(\d+):(\d+)(?::(\d+):(\d+))?$/u.exec(text))) {
+    return { width: Number(match[1]), height: Number(match[2]), x: Number(match[3] || 0), y: Number(match[4] || 0) };
+  }
+  if (kind === 'video' && name === 'fps' && /^\d{1,6}(?:\/\d{1,6}|\.\d{1,6})?$/u.test(text)) return { rate: text };
+  if (kind === 'audio' && name === 'atempo' && /^\d+(?:\.\d+)?$/u.test(text)) return { tempo: Number(text) };
+  if (kind === 'audio' && name === 'loudnorm') {
+    const values = Object.fromEntries(text.split(':').map((part) => part.split('=', 2)));
+    if (values.I !== undefined && values.LRA !== undefined && values.TP !== undefined) {
+      return { integrated: Number(values.I), lra: Number(values.LRA), truePeak: Number(values.TP) };
+    }
+  }
+  return {};
+};
+const normalizeFilterNode = (value) => {
+  const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const inferredKind = ['loudnorm', 'atempo'].includes(source.name) ? 'audio' : 'video';
+  const kind = source.kind === 'audio' || source.kind === 'video' ? source.kind : inferredKind;
+  const names = Object.keys(filtergraphCatalog[kind] || {});
+  const name = names.includes(source.name) ? source.name : names[0];
+  const definition = filterDefinition(kind, name);
+  const supplied = legacyFilterOptions(kind, name, source.options);
+  const options = defaultFilterOptions(kind, name);
+  for (const field of definition?.fields || []) {
+    if (!Object.prototype.hasOwnProperty.call(supplied, field.key)) continue;
+    if (field.type === 'checkbox') options[field.key] = Boolean(supplied[field.key]);
+    else if (field.type === 'number') {
+      const numeric = Number(supplied[field.key]);
+      if (Number.isFinite(numeric)) options[field.key] = numeric;
+    } else if (field.type === 'select') {
+      if (field.values.includes(String(supplied[field.key]))) options[field.key] = String(supplied[field.key]);
+    } else options[field.key] = bounded(supplied[field.key], field.maxLength || 200);
+  }
+  return { kind, name, options };
+};
+const normalizeFilters = (value) => {
+  const nodes = Array.isArray(value) ? value.slice(0, 64).map(normalizeFilterNode) : [];
+  return nodes.length ? nodes : [normalizeFilterNode({ kind: 'video', name: 'scale' })];
+};
+
 const state = {
   view: 'overview', theme: store.get('theme', 'dark'), logo: store.get('logo', { glyph: 'M', image: '' }),
   runtime: {
@@ -114,7 +163,7 @@ const state = {
   }, runtimeCatalog: {},
   jobs: [], selectedJobs: new Set(), selectedJobId: '', catalogs: {}, catalogErrors: {}, catalogLoading: {},
   inputs: {}, outputs: {}, probe: null, probeError: '', probeExportError: '', probeExportFormat: '', audioStreams: [],
-  filters: store.get('filters', [{ name: 'scale', options: '1920:-2' }]), selectedFilter: 0,
+  filters: normalizeFilters(store.get('filters', [{ kind: 'video', name: 'scale', options: { width: 1920, height: -2, flags: 'lanczos' } }])), selectedFilter: 0,
   presets: store.get('presets', []), converterFiles: [], tabs: normalizeTabs(store.get('tabs', DEFAULT_TABS)),
   notifications: store.get('notifications', []),
   settings: normalizeSettings(store.get('settings', {})),
@@ -448,19 +497,17 @@ const trimValues = () => {
   };
 };
 const filtergraphValues = () => {
-  const videoGraph = state.filters.filter((node) => (node.kind || (['loudnorm', 'atempo'].includes(node.name) ? 'audio' : 'video')) === 'video')
-    .map((node) => node.options ? `${node.name}=${node.options}` : node.name).join(',');
-  const audioGraph = state.filters.filter((node) => (node.kind || (['loudnorm', 'atempo'].includes(node.name) ? 'audio' : 'video')) === 'audio')
-    .map((node) => node.options ? `${node.name}=${node.options}` : node.name).join(',');
+  const nodes = state.filters.map((node) => ({ kind: node.kind, name: node.name, options: Object.assign({}, node.options) }));
+  const hasVideo = nodes.some((node) => node.kind === 'video');
+  const hasAudio = nodes.some((node) => node.kind === 'audio');
   return {
     input: state.inputs.filters?.handle,
     output: requireExtension(state.outputs.filters, ['mp4','mkv','mov'], 'filtergraph output').handle,
-    videoGraph: videoGraph || undefined,
-    audioGraph: audioGraph || undefined,
-    videoCodec: videoGraph ? 'libx264' : 'copy',
-    audioCodec: audioGraph ? 'aac' : 'copy',
-    crf: videoGraph ? state.form.crf : undefined,
-    preset: videoGraph ? state.form.preset : undefined
+    nodes,
+    videoCodec: hasVideo ? 'libx264' : 'copy',
+    audioCodec: hasAudio ? 'aac' : 'copy',
+    crf: hasVideo ? state.form.crf : undefined,
+    preset: hasVideo ? state.form.preset : undefined
   };
 };
 const extractValues = () => ({
@@ -638,6 +685,29 @@ const jobRows = (selectable = false) => state.jobs.length ? state.jobs.map((job)
 const field = (label, control) => `<label class="field"><span>${esc(label)}</span>${control}</label>`;
 const input = (id, value, type = 'text', extra = '') => `<input id="${id}" type="${type}" value="${esc(value)}" ${extra}>`;
 const select = (id, values, selected) => `<select id="${id}">${values.map((value) => `<option value="${esc(value)}"${String(value) === String(selected) ? ' selected' : ''}>${esc(value)}</option>`).join('')}</select>`;
+const filterOptionControl = (node, definition, option) => {
+  const id = `filter-option-${option.key}`;
+  const value = node.options?.[option.key] ?? definition.defaults?.[option.key] ?? '';
+  if (option.type === 'checkbox') return `<label class="check-row"><input id="${id}" type="checkbox"${value ? ' checked' : ''}> ${esc(option.label)}</label>`;
+  if (option.type === 'select') return field(option.label, select(id, option.values, value));
+  const attributes = [
+    option.min !== undefined ? `min="${esc(option.min)}"` : '',
+    option.max !== undefined ? `max="${esc(option.max)}"` : '',
+    option.step !== undefined ? `step="${esc(option.step)}"` : '',
+    option.maxLength !== undefined ? `maxlength="${esc(option.maxLength)}"` : '',
+    option.placeholder ? `placeholder="${esc(option.placeholder)}"` : '',
+  ].filter(Boolean).join(' ');
+  return field(option.label, input(id, value, option.type === 'number' ? 'number' : 'text', attributes));
+};
+const filterNodeSummary = (node) => {
+  const definition = filterDefinition(node.kind, node.name);
+  return (definition?.fields || []).map((option) => `${option.label}: ${node.options?.[option.key] ?? ''}`).join(' · ');
+};
+const filterChain = (kind, label) => {
+  const entries = state.filters.map((node, index) => ({ node, index })).filter((entry) => entry.node.kind === kind);
+  const chain = entries.length ? entries.map(({ node, index }) => `<button type="button" class="node${index === state.selectedFilter ? ' sel' : ''}" data-filter-index="${index}"><b>${esc(filterDefinition(node.kind, node.name)?.label || node.name)}</b><br><small>${esc(filterNodeSummary(node))}</small></button>`).join('<span class="ms" aria-hidden="true">east</span>') : '<div class="empty-state">No nodes in this chain.</div>';
+  return `<section class="filter-lane" aria-label="${esc(label)}"><div class="filter-lane-head"><h3>${esc(label)}</h3><span>${entries.length} ordered node${entries.length === 1 ? '' : 's'}</span></div><div class="filter-chain">${chain}</div></section>`;
+};
 const pageHead = (eyebrow, title, description, actions = '') => `<div class="page-head"><div><p class="eyebrow">${esc(eyebrow)}</p><h1>${esc(title)}</h1><p class="lede">${esc(description)}</p></div><div class="head-actions">${actions}</div></div>`;
 const displayFile = (file, empty) => file ? esc(displayText(file.name, file.kind === 'output' ? 'output file' : 'input file')) : `<span class="hint">${esc(empty)}</span>`;
 const pickerCard = (slot, label, output = false) => `<div class="list-item"><span class="ms">${output ? 'output' : 'movie'}</span><span style="flex:1;min-width:0"><b>${esc(label)}</b><br><small class="mono">${displayFile(output ? state.outputs[slot] : state.inputs[slot], output ? 'Choose an output destination' : 'Choose an input file')}</small></span><button class="tonal ${output ? 'pick-output' : 'pick-input'}" data-slot="${slot}">${output ? 'Choose' : 'Browse'}</button></div>`;
@@ -707,9 +777,16 @@ const VIEWS = {
       ${field('Preset',select('trim-preset',['ultrafast','veryfast','fast','medium','slow','slower','veryslow'],state.form.trimPreset))}
     </div></fieldset><p class="hint">Re-encode controls are unavailable in copy mode because stream copy does not consume them. An out point is converted to a positive clip duration after the selected start time.</p></div><div class="card span5"><h2>Command preview</h2><pre class="cmd-pre" id="trim-command-preview">${esc(workflowPreview('trim',trimValues))}</pre></div></div>`,
 
-  filters: () => `${pageHead('Filtergraph', 'Node graph', 'Build a real ordered filter chain, edit each node, and queue it.', '<button class="outlined" id="add-filter">Add node</button><button class="filled" id="queue-filtergraph">Apply & queue</button>')}
-    <div class="grid"><div class="card span7"><div class="list">${pickerCard('filters','Input')}${pickerCard('filters','Output',true)}</div><div class="graph" style="margin-top:14px">${state.filters.length ? state.filters.map((node,index) => `<button class="node${index === state.selectedFilter ? ' sel' : ''}" data-filter-index="${index}"><b>${esc(node.name)}</b><br><small>${esc(node.options || 'No options')}</small></button>`).join('<span class="ms">east</span>') : '<div class="empty-state">No filters. Add one to begin.</div>'}</div></div>
-    <div class="card span5"><h2>Selected node</h2>${state.filters[state.selectedFilter] ? `${field('Media stream',select('filter-kind',['video','audio'],state.filters[state.selectedFilter].kind || (['loudnorm','atempo'].includes(state.filters[state.selectedFilter].name) ? 'audio' : 'video')))}${field('Filter', select('filter-name',(state.filters[state.selectedFilter].kind || (['loudnorm','atempo'].includes(state.filters[state.selectedFilter].name) ? 'audio' : 'video')) === 'audio' ? ['loudnorm','atempo'] : ['scale','crop','fps','eq','curves','drawtext','unsharp'],state.filters[state.selectedFilter].name))}${field('Options', `<textarea id="filter-options" class="mono" rows="7">${esc(state.filters[state.selectedFilter].options)}</textarea>`)}<button class="tonal" id="update-filter">Update node</button><button class="outlined" id="remove-filter">Remove node</button>` : '<div class="empty-state">Select or add a node.</div>'}<p class="hint">Audio and video chains are compiled separately, then applied to the matching stream.</p></div></div>`,
+  filters: () => {
+    const node = state.filters[state.selectedFilter];
+    const definition = node ? filterDefinition(node.kind, node.name) : null;
+    const sameKindIndices = node ? state.filters.map((entry, index) => entry.kind === node.kind ? index : -1).filter((index) => index >= 0) : [];
+    const chainPosition = sameKindIndices.indexOf(state.selectedFilter);
+    const editor = node && definition ? `${field('Media stream',select('filter-kind',['video','audio'],node.kind))}${field('Filter', select('filter-name',Object.keys(filtergraphCatalog[node.kind] || {}),node.name))}<div class="two-col">${definition.fields.map((option) => filterOptionControl(node, definition, option)).join('')}</div><div class="dialog-actions"><button class="outlined" id="filter-earlier"${chainPosition <= 0 ? ' disabled' : ''}>Move earlier</button><button class="outlined" id="filter-later"${chainPosition < 0 || chainPosition >= sameKindIndices.length - 1 ? ' disabled' : ''}>Move later</button></div><div class="dialog-actions"><button class="tonal" id="update-filter">Update node</button><button class="outlined" id="remove-filter">Remove node</button></div>` : '<div class="empty-state">Select or add a node.</div>';
+    return `${pageHead('Filtergraph', 'Node graph', 'Build validated ordered video and audio chains, then queue them through the trusted runtime.', '<button class="outlined" id="add-video-filter">Add video node</button><button class="outlined" id="add-audio-filter">Add audio node</button><button class="filled" id="queue-filtergraph">Apply & queue</button>')}
+      <div class="grid"><div class="card span7"><div class="list">${pickerCard('filters','Input')}${pickerCard('filters','Output',true)}</div><div class="graph" style="margin-top:14px">${filterChain('video','Video chain')}${filterChain('audio','Audio chain')}</div></div>
+      <div class="card span5"><h2>Selected node</h2>${editor}<p class="hint">Only the listed filters and guided option ranges are accepted. Video and audio nodes keep their own visible order and compile into separate chains.</p><h3>Command preview</h3><pre class="cmd-pre">${esc(workflowPreview('filtergraph',filtergraphValues))}</pre></div></div>`;
+  },
 
   audio: () => `${pageHead('Audio', 'Extraction & loudness', 'Inspect real streams, normalize with measured loudness, or extract one selected stream.', '')}
     <div class="grid"><div class="card span6"><h2>Two-pass loudness</h2><div class="list">${pickerCard('audio','Input')}${pickerCard('audio-normalize','Normalized output',true)}</div>
@@ -1055,6 +1132,59 @@ async function reconcileLoudnormJobs() {
   }
 }
 
+function addFilterNode(kind) {
+  if (state.filters.length >= 64) return notify('Filter node not added', 'A filtergraph is limited to 64 ordered nodes.', 'error');
+  const name = Object.keys(filtergraphCatalog[kind] || {})[0];
+  if (!name) return notify('Filter node not added', `No ${kind} filters are available.`, 'error');
+  state.filters.push({ kind, name, options: defaultFilterOptions(kind, name) });
+  state.selectedFilter = state.filters.length - 1;
+  saveUi();
+  render();
+}
+
+function readFilterDraft() {
+  const current = state.filters[state.selectedFilter];
+  if (!current) throw new Error('Select a filter node first.');
+  const kind = $('#filter-kind')?.value;
+  const name = $('#filter-name')?.value;
+  const definition = filterDefinition(kind, name);
+  if (!definition) throw new Error('Choose a supported filter.');
+  const options = {};
+  for (const option of definition.fields) {
+    const control = $(`#filter-option-${option.key}`);
+    if (!control) throw new Error(`The ${option.label} control is unavailable.`);
+    if (option.type === 'checkbox') options[option.key] = control.checked;
+    else if (option.type === 'number') options[option.key] = control.value.trim() === '' ? undefined : Number(control.value);
+    else options[option.key] = control.value;
+  }
+  return { kind, name, options };
+}
+
+function validateFilterDraft(node) {
+  const hasVideo = node.kind === 'video';
+  build('filtergraph', {
+    input: '00000000-0000-4000-8000-000000000001',
+    output: '00000000-0000-4000-8000-000000000002',
+    nodes: [node],
+    videoCodec: hasVideo ? 'libx264' : 'copy',
+    audioCodec: hasVideo ? 'copy' : 'aac'
+  });
+}
+
+function moveSelectedFilter(offset) {
+  const node = state.filters[state.selectedFilter];
+  if (!node) return;
+  const indices = state.filters.map((entry, index) => entry.kind === node.kind ? index : -1).filter((index) => index >= 0);
+  const position = indices.indexOf(state.selectedFilter);
+  const targetPosition = position + offset;
+  if (position < 0 || targetPosition < 0 || targetPosition >= indices.length) return;
+  const targetIndex = indices[targetPosition];
+  [state.filters[state.selectedFilter], state.filters[targetIndex]] = [state.filters[targetIndex], state.filters[state.selectedFilter]];
+  state.selectedFilter = targetIndex;
+  saveUi();
+  render();
+}
+
 function wireView() {
   $$('[data-go]').forEach((button) => button.onclick = () => go(button.dataset.go));
   $$('[data-group]').forEach((button) => button.onclick = () => go(GROUPS[button.dataset.group].items[0][0]));
@@ -1084,11 +1214,15 @@ function wireView() {
   $('#queue-thumbs')?.addEventListener('click', () => enqueue('thumbnails', thumbnailValues, state.outputs.thumbs?.name || 'Thumbnail'));
   $('#queue-stream')?.addEventListener('click', () => enqueue(state.form.streamMode === 'hls' ? 'hls' : 'stream', streamingValues, `${state.form.streamMode.toUpperCase()} output`));
 
-  $('#add-filter')?.addEventListener('click', () => { state.filters.push({ kind: 'video', name: 'scale', options: '1920:-2' }); state.selectedFilter = state.filters.length - 1; render(); });
+  $('#add-video-filter')?.addEventListener('click', () => addFilterNode('video'));
+  $('#add-audio-filter')?.addEventListener('click', () => addFilterNode('audio'));
   $$('[data-filter-index]').forEach((button) => button.onclick = () => { state.selectedFilter = Number(button.dataset.filterIndex); render(); });
-  const filterKind = $('#filter-kind'); if (filterKind) filterKind.onchange = () => { const node = state.filters[state.selectedFilter]; if (!node) return; node.kind = filterKind.value; node.name = node.kind === 'audio' ? 'loudnorm' : 'scale'; node.options = node.kind === 'audio' ? 'I=-16:LRA=11:TP=-1.5' : '1920:-2'; render(); };
-  $('#update-filter')?.addEventListener('click', () => { const node = state.filters[state.selectedFilter]; if (!node) return; node.kind = bounded($('#filter-kind').value, 20); node.name = bounded($('#filter-name').value, 80); node.options = bounded($('#filter-options').value, 2000); render(); });
-  $('#remove-filter')?.addEventListener('click', () => { state.filters.splice(state.selectedFilter,1); state.selectedFilter = clamp(state.selectedFilter,0,Math.max(0,state.filters.length-1)); render(); });
+  const filterKind = $('#filter-kind'); if (filterKind) filterKind.onchange = () => { const node = state.filters[state.selectedFilter]; if (!node) return; const kind = filterKind.value; const name = Object.keys(filtergraphCatalog[kind] || {})[0]; state.filters[state.selectedFilter] = { kind, name, options: defaultFilterOptions(kind, name) }; saveUi(); render(); };
+  const filterName = $('#filter-name'); if (filterName) filterName.onchange = () => { const node = state.filters[state.selectedFilter]; if (!node) return; node.name = filterName.value; node.options = defaultFilterOptions(node.kind, node.name); saveUi(); render(); };
+  $('#update-filter')?.addEventListener('click', () => { try { const draft = readFilterDraft(); validateFilterDraft(draft); state.filters[state.selectedFilter] = draft; saveUi(); render(); notify('Filter node updated', 'The validated options are now part of this ordered chain.'); } catch (error) { notify('Filter node not updated', error.message, 'error'); } });
+  $('#filter-earlier')?.addEventListener('click', () => moveSelectedFilter(-1));
+  $('#filter-later')?.addEventListener('click', () => moveSelectedFilter(1));
+  $('#remove-filter')?.addEventListener('click', () => { state.filters.splice(state.selectedFilter,1); state.selectedFilter = clamp(state.selectedFilter,0,Math.max(0,state.filters.length-1)); saveUi(); render(); });
 
   $('#save-convert-preset')?.addEventListener('click', savePreset); $('#new-preset')?.addEventListener('click', savePreset);
   $$('.preset-use').forEach((button) => button.onclick = () => { Object.assign(state.form,state.presets[Number(button.dataset.index)]?.values || {}); go('convert'); });

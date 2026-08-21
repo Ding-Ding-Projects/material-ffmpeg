@@ -64,7 +64,12 @@ const normalizeSettings = (value) => {
 
 const state = {
   view: 'overview', theme: store.get('theme', 'dark'), logo: store.get('logo', { glyph: 'M', image: '' }),
-  runtime: { available: false, loading: true, version: '', error: '' }, runtimeCatalog: {},
+  runtime: {
+    available: false, loading: true, version: '', ffmpegVersion: '', ffprobeVersion: '',
+    ffmpegVersionFull: '', ffprobeVersionFull: '', configuration: '', ffmpegAvailable: false,
+    ffprobeAvailable: false, origin: '', locationMode: '', locationRootId: '', locationsChecked: 0,
+    reasonId: '', error: ''
+  }, runtimeCatalog: {},
   jobs: [], selectedJobs: new Set(), selectedJobId: '', catalogs: {}, catalogErrors: {}, catalogLoading: {},
   inputs: {}, outputs: {}, probe: null, probeError: '', audioStreams: [],
   filters: store.get('filters', [{ name: 'scale', options: '1920:-2' }]), selectedFilter: 0,
@@ -371,19 +376,40 @@ const pageHead = (eyebrow, title, description, actions = '') => `<div class="pag
 const displayFile = (file, empty) => file ? esc(file.name) : `<span class="hint">${esc(empty)}</span>`;
 const pickerCard = (slot, label, output = false) => `<div class="list-item"><span class="ms">${output ? 'output' : 'movie'}</span><span style="flex:1;min-width:0"><b>${esc(label)}</b><br><small class="mono">${displayFile(output ? state.outputs[slot] : state.inputs[slot], output ? 'Choose an output destination' : 'Choose an input file')}</small></span><button class="tonal ${output ? 'pick-output' : 'pick-input'}" data-slot="${slot}">${output ? 'Choose' : 'Browse'}</button></div>`;
 
+const runtimeCard = () => {
+  const runtime = state.runtime;
+  const value = runtime.loading ? 'Loading' : runtime.available ? runtime.ffmpegVersion || runtime.version || 'Ready' : 'Unavailable';
+  const location = [runtime.locationMode, runtime.locationRootId].filter(Boolean).join(' · ') || 'Not reported';
+  const rows = [
+    ['FFmpeg', runtime.ffmpegAvailable ? `Available · ${runtime.ffmpegVersion || runtime.version || 'version unavailable'}` : 'Unavailable'],
+    ['ffprobe', runtime.ffprobeAvailable ? `Available · ${runtime.ffprobeVersion || 'version unavailable'}` : 'Unavailable'],
+    ['Origin', runtime.origin || 'Not reported'],
+    ['Location', location],
+    ['Checked', `${Number(runtime.locationsChecked) || 0} trusted location${Number(runtime.locationsChecked) === 1 ? '' : 's'}`],
+    ['Status', runtime.reasonId || (runtime.available ? 'Ready' : 'Unavailable')]
+  ];
+  const fullFacts = [
+    ['FFmpeg build', runtime.ffmpegVersionFull],
+    ['ffprobe build', runtime.ffprobeVersionFull],
+    ['Configuration', runtime.configuration]
+  ].filter(([, fact]) => fact);
+  return `<div class="card span3 runtime-card"><small>Runtime</small><div class="stat runtime-stat">${esc(value)}</div><small>${esc(runtime.error || 'Bundled FFmpeg status')}</small>
+    <details class="runtime-meta"><summary>Runtime details</summary>${rows.map(([label, fact]) => `<div class="runtime-meta-row"><span class="runtime-meta-label">${esc(label)}</span><span class="runtime-meta-value">${esc(fact)}</span></div>`).join('')}
+    ${fullFacts.map(([label, fact]) => `<div class="runtime-meta-row"><span class="runtime-meta-label">${esc(label)}</span><code class="runtime-meta-value${label === 'Configuration' ? ' runtime-configuration' : ''}">${esc(fact)}</code></div>`).join('')}</details></div>`;
+};
+
 const VIEWS = {
   overview: () => {
     const counts = state.runtimeCatalog.counts || {};
     const running = state.jobs.filter((job) => ['running', 'encoding'].includes(job.status)).length;
     const queued = state.jobs.filter((job) => job.status === 'queued').length;
     const cards = [
-      ['Runtime', state.runtime.loading ? 'Loading' : state.runtime.available ? state.runtime.version || 'Ready' : 'Unavailable', state.runtime.error || 'Bundled FFmpeg status'],
       ['Codecs', counts.codecs ?? '—', counts.codecs == null ? 'Load from the bundled runtime' : 'Reported by this build'],
       ['Filters', counts.filters ?? '—', counts.filters == null ? 'Load from the bundled runtime' : 'Reported by this build'],
       ['Queue', `${running} + ${queued}`, 'running + queued']
     ];
     return `${pageHead('Media control plane', 'Overview', 'Live state from the bundled FFmpeg runtime and durable job queue.', '<button class="filled" data-go="convert">New job</button><button class="tonal" data-go="composer">Command composer</button>')}
-      <div class="grid">${cards.map(([label, value, sub]) => `<div class="card span3"><small>${esc(label)}</small><div class="stat">${esc(value)}</div><small>${esc(sub)}</small></div>`).join('')}
+      <div class="grid">${runtimeCard()}${cards.map(([label, value, sub]) => `<div class="card span3"><small>${esc(label)}</small><div class="stat">${esc(value)}</div><small>${esc(sub)}</small></div>`).join('')}
       <div class="card span8"><div class="section-head"><h2>Active queue</h2><button class="tonal" data-go="jobs">All jobs</button></div><div class="list">${jobRows()}</div></div>
       <div class="card span4"><h2>Quick actions</h2><div class="list">${[['sync_alt','Convert a file','convert'],['content_cut','Trim a clip','trim'],['graphic_eq','Normalize audio','audio'],['search_insights','Inspect media','inspector']].map(([icon,label,view]) => `<button class="list-item" data-go="${view}"><span class="ms">${icon}</span>${label}</button>`).join('')}</div></div></div>`;
   },
@@ -480,8 +506,9 @@ function bindFunnyLevelControl(inputId, outputId, previewId, language) {
 function render() {
   const group = groupFor(state.view);
   $('#rail').innerHTML = RAIL.map(([id,icon,label]) => `<button class="rail-item${id === group ? ' active' : ''}" data-group="${id}"><span class="ms">${icon}</span><b>${label}</b></button>`).join('') + '<div class="rail-spacer"></div><button class="rail-item" id="palette-open"><span class="ms">keyboard_command_key</span><b>Commands</b></button>';
-  const version = state.runtime.loading ? 'Checking runtime…' : state.runtime.available ? `FFmpeg ${esc(state.runtime.version || 'ready')}` : 'FFmpeg unavailable';
-  $('#subnav').innerHTML = `<p class="eyebrow">${esc(GROUPS[group].title)}</p><div style="display:grid;gap:3px">${GROUPS[group].items.map(([id,icon,label]) => `<button class="subnav-item${id === state.view ? ' active' : ''}" data-go="${id}"><span class="ms">${icon}</span><span>${esc(label)}</span></button>`).join('')}</div><div class="build-note"><b>${version}</b><br>${esc(state.runtime.error || 'Bundled runtime')}</div>`;
+  const version = state.runtime.loading ? 'Checking runtime…' : state.runtime.available ? `FFmpeg ${state.runtime.ffmpegVersion || state.runtime.version || 'ready'}` : 'FFmpeg unavailable';
+  const runtimeNote = state.runtime.error || (state.runtime.ffprobeVersion ? `ffprobe ${state.runtime.ffprobeVersion} · bundled runtime` : 'Bundled runtime');
+  $('#subnav').innerHTML = `<p class="eyebrow">${esc(GROUPS[group].title)}</p><div style="display:grid;gap:3px">${GROUPS[group].items.map(([id,icon,label]) => `<button class="subnav-item${id === state.view ? ' active' : ''}" data-go="${id}"><span class="ms">${icon}</span><span>${esc(label)}</span></button>`).join('')}</div><div class="build-note"><b>${esc(version)}</b><br><span>${esc(runtimeNote)}</span></div>`;
   $('#tabs').innerHTML = state.tabs.map((tab) => `<button class="tab${(tab.view || tab.id) === state.view ? ' active' : ''}" data-go="${esc(tab.view || tab.id)}" role="tab" data-tab-id="${esc(tab.id)}"><span class="ms">${esc(normalizeTabIcon(tab.icon))}</span><span>${esc(tab.label)}</span>${tab.pinned ? '<span class="ms">keep</span>' : ''}</button>`).join('') + '<button id="tab-add" title="Open current view as a tab">+</button><button id="tab-list"><span class="ms">menu</span></button><div class="palette-hint" id="palette-open-2">Search everything <b>Ctrl+Shift+F</b></div>';
   $('#content').innerHTML = (VIEWS[state.view] || VIEWS.overview)(); $('#live-command').textContent = livePreview();
   document.body.classList.toggle('light', state.theme === 'light');
@@ -715,9 +742,28 @@ async function refreshRuntime() {
   state.runtime.loading = true; state.runtime.error = ''; render();
   try {
     const [status,catalog] = await Promise.all([apiCall('runtime.status'),apiCall('runtime.catalog')]);
-    state.runtime = { available: status?.ready === true, loading: false, version: bounded(status?.version || status?.ffmpegVersion || '',100), error: bounded(status?.error || (!status?.ready ? 'Bundled FFmpeg or ffprobe is unavailable.' : ''),500) };
+    state.runtime = {
+      available: status?.ready === true,
+      loading: false,
+      version: bounded(status?.version || status?.ffmpegVersion || '', 100),
+      ffmpegVersion: bounded(status?.ffmpegVersion || status?.version || '', 100),
+      ffprobeVersion: bounded(status?.ffprobeVersion || '', 100),
+      ffmpegVersionFull: String(status?.ffmpegVersionFull || ''),
+      ffprobeVersionFull: String(status?.ffprobeVersionFull || ''),
+      configuration: String(status?.configuration || ''),
+      ffmpegAvailable: status?.ffmpegAvailable === true,
+      ffprobeAvailable: status?.ffprobeAvailable === true,
+      origin: bounded(status?.origin || '', 100),
+      locationMode: bounded(status?.locationMode || '', 100),
+      locationRootId: bounded(status?.locationRootId || '', 100),
+      locationsChecked: Number.isInteger(status?.locationsChecked) ? status.locationsChecked : 0,
+      reasonId: bounded(status?.reasonId || '', 200),
+      error: bounded(status?.error || (!status?.ready ? 'Bundled FFmpeg or ffprobe is unavailable.' : ''), 500)
+    };
     state.runtimeCatalog = catalog && typeof catalog === 'object' ? catalog : {};
-  } catch (error) { state.runtime = { available:false,loading:false,version:'',error:error.message }; }
+  } catch (error) {
+    state.runtime = Object.assign({}, state.runtime, { available: false, loading: false, version: '', ffmpegVersion: '', ffprobeVersion: '', error: bounded(error.message, 500) });
+  }
   render();
 }
 

@@ -35,14 +35,17 @@ class RuntimeService {
     const fingerprint = this.refreshCacheFingerprint();
     const installed = executableStatus(this.executables);
     let version = null;
+    let ffmpegVersion = null;
     let ffprobeVersion = null;
+    let ffmpegVersionFull = null;
+    let ffprobeVersionFull = null;
     let configuration = null;
     let error = null;
     if (installed.ffmpeg) {
       try {
         const cached = this.cache.get('status');
         if (cached && cached.fingerprint === fingerprint && Date.now() - cached.at < CACHE_MS) {
-          ({ version, ffprobeVersion, configuration } = cached.value);
+          ({ version, ffmpegVersion, ffprobeVersion, ffmpegVersionFull, ffprobeVersionFull, configuration } = cached.value);
         } else {
           const [ffmpegResult, ffprobeResult] = await Promise.all([
             collectProcess(this.executables.ffmpeg, ['-version'], { maxBytes: 256 * 1024, timeoutMs: 10_000 }),
@@ -51,10 +54,18 @@ class RuntimeService {
               : Promise.resolve({ stdout: '' })
           ]);
           const versionLines = normalizedVersionLines(ffmpegResult.stdout);
-          version = versionLines[0] || null;
+          const ffprobeVersionLines = normalizedVersionLines(ffprobeResult.stdout);
+          ffmpegVersionFull = versionLines[0] || null;
+          ffprobeVersionFull = ffprobeVersionLines[0] || null;
+          ffmpegVersion = conciseToolVersion(ffmpegVersionFull, 'ffmpeg');
+          ffprobeVersion = conciseToolVersion(ffprobeVersionFull, 'ffprobe');
+          version = ffmpegVersion;
           configuration = versionLines.find((line) => line.startsWith('configuration:')) || null;
-          ffprobeVersion = normalizedVersionLines(ffprobeResult.stdout)[0] || null;
-          this.cache.set('status', { at: Date.now(), fingerprint, value: { version, ffprobeVersion, configuration } });
+          this.cache.set('status', {
+            at: Date.now(),
+            fingerprint,
+            value: { version, ffmpegVersion, ffprobeVersion, ffmpegVersionFull, ffprobeVersionFull, configuration }
+          });
         }
       } catch (caught) {
         error = caught.message;
@@ -70,7 +81,10 @@ class RuntimeService {
       locationsChecked: installed.locationsChecked,
       reasonId: error ? 'TRUSTED_RUNTIME_EXECUTION_FAILED' : installed.reasonId,
       version,
+      ffmpegVersion,
       ffprobeVersion,
+      ffmpegVersionFull,
+      ffprobeVersionFull,
       configuration,
       error
     };
@@ -161,6 +175,15 @@ function normalizeExportFormat(value) {
 
 function normalizedVersionLines(value) {
   return String(value || '').replace(/\u0000/g, '').split(/\r?\n/u).map((line) => line.trim()).filter(Boolean).slice(0, 64);
+}
+
+function conciseToolVersion(value, tool) {
+  const line = String(value || '').trim();
+  if (!line) return null;
+  const match = line.match(new RegExp(`^${tool}\\s+version\\s+([^\\s]+)`, 'iu'));
+  if (!match) return null;
+  const release = match[1].match(/\d+(?:\.\d+){1,3}/u);
+  return release ? release[0] : match[1].slice(0, 64);
 }
 
 function fingerprintFile(filePath) {

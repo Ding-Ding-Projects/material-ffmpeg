@@ -22,6 +22,8 @@ const INVENTORY_ARGS = Object.freeze({
 const HELP_KINDS = new Set(['encoder', 'decoder', 'filter', 'muxer', 'demuxer', 'protocol', 'bsf']);
 const NAME_RE = /^[a-z0-9_.+-]{1,128}$/i;
 const CACHE_MS = 5 * 60 * 1000;
+const MAX_PROBE_EXPORT_BYTES = 32 * 1024 * 1024;
+const MAX_PROBE_SNAPSHOTS = 64;
 
 class RuntimeService {
   constructor({ executables, fileRegistry }) {
@@ -29,6 +31,7 @@ class RuntimeService {
     this.fileRegistry = fileRegistry;
     this.cache = new Map();
     this.cacheFingerprint = null;
+    this.probeSnapshots = new Map();
   }
 
   async status() {
@@ -125,26 +128,34 @@ class RuntimeService {
   async inspect(fileHandle) {
     this.assertAvailable('ffprobe');
     const inputPath = this.fileRegistry.resolve(fileHandle, 'input');
+    this.probeSnapshots.delete(fileHandle);
     const result = await collectProcess(this.executables.ffprobe, [
       '-v', 'error', '-show_format', '-show_streams', '-show_chapters', '-show_programs', '-of', 'json', inputPath
     ], { maxBytes: 16 * 1024 * 1024, timeoutMs: 60_000 });
-    return parseProbeJson(result.stdout);
+    const probe = parseProbeJson(result.stdout);
+    this.probeSnapshots.set(fileHandle, probe);
+    while (this.probeSnapshots.size > MAX_PROBE_SNAPSHOTS) {
+      this.probeSnapshots.delete(this.probeSnapshots.keys().next().value);
+    }
+    return probe;
   }
 
   async exportProbe(spec) {
     if (!spec || typeof spec !== 'object' || Array.isArray(spec)) throw new TypeError('Probe export specification must be an object.');
-    this.assertAvailable('ffprobe');
-    const inputPath = this.fileRegistry.resolve(spec.fileHandle, 'input');
     const outputPath = this.fileRegistry.resolve(spec.destinationHandle, 'output');
     const format = normalizeExportFormat(spec.format);
-    const result = await collectProcess(this.executables.ffprobe, [
-      '-v', 'error', '-show_format', '-show_streams', '-show_chapters', '-show_programs', '-of', format.writer, inputPath
-    ], { maxBytes: 32 * 1024 * 1024, timeoutMs: 60_000 });
-    const output = result.stdout;
-    if (!output.trim()) throw new Error('ffprobe produced no export data.');
-    validateProbeExport(format.name, output);
-    atomicWritePreservingExisting(outputPath, output);
-    return { name: path.basename(outputPath), format: format.name, bytes: Buffer.byteLength(output, 'utf8'), status: 'written', truncated: false };
+    const snapshot = this.probeSnapshots.get(spec.fileHandle);
+    if (!snapshot) throw new Error('The inspected result is no longer available. Inspect the selected file again before exporting.');
+    const serialized = serializeProbeExport(format.name, snapshot);
+    atomicWritePreservingExisting(outputPath, serialized.body);
+    return {
+      name: path.basename(outputPath),
+      format: format.name,
+      bytes: Buffer.byteLength(serialized.body, 'utf8'),
+      records: serialized.records,
+      status: 'written',
+      truncated: false
+    };
   }
 
   assertAvailable(tool) {
@@ -167,10 +178,114 @@ class RuntimeService {
 }
 
 function normalizeExportFormat(value) {
-  if (value === 'json') return { name: 'json', writer: 'json' };
-  if (value === 'csv') return { name: 'csv', writer: 'csv' };
-  if (value === 'xml') return { name: 'xml', writer: 'xml' };
+  if (value === 'json') return { name: 'json' };
+  if (value === 'csv') return { name: 'csv' };
+  if (value === 'xml') return { name: 'xml' };
   throw new TypeError('Probe export format must be json, csv, or xml.');
+}
+
+function serializeProbeExport(format, probe) {
+  const normalized = parseProbeJson(JSON.stringify(probe), { maxBytes: MAX_PROBE_EXPORT_BYTES });
+  let body;
+  let records = 1;
+  if (format === 'json') {
+    body = `${JSON.stringify(normalized, null, 2)}\n`;
+  } else {
+    const nodes = flattenProbeNodes(normalized);
+    records = nodes.length;
+    body = format === 'csv' ? serializeProbeCsv(nodes) : serializeProbeXml(nodes);
+  }
+  const bytes = Buffer.byteLength(body, 'utf8');
+  if (bytes > MAX_PROBE_EXPORT_BYTES) {
+    throw new RangeError(`The ${format.toUpperCase()} export exceeds the 32 MiB serialization limit.`);
+  }
+  return { body, records };
+}
+
+function flattenProbeNodes(root) {
+  const nodes = [];
+  let retainedBytes = 0;
+  const add = (node) => {
+    retainedBytes += Buffer.byteLength(node.path, 'utf8') + Buffer.byteLength(node.value, 'utf8') + node.type.length + 32;
+    if (retainedBytes > MAX_PROBE_EXPORT_BYTES) {
+      throw new RangeError('The flattened inspection exceeds the 32 MiB serialization limit. Export JSON instead.');
+    }
+    nodes.push(node);
+  };
+  const visit = (value, pointer) => {
+    if (Array.isArray(value)) {
+      add({ path: pointer, type: 'array', value: '' });
+      value.forEach((item, index) => visit(item, `${pointer}/${index}`));
+      return;
+    }
+    if (value && typeof value === 'object') {
+      add({ path: pointer, type: 'object', value: '' });
+      Object.keys(value).forEach((key) => visit(value[key], `${pointer}/${escapeJsonPointerToken(key)}`));
+      return;
+    }
+    if (value === null) {
+      add({ path: pointer, type: 'null', value: '' });
+      return;
+    }
+    const type = typeof value;
+    if (!['string', 'number', 'boolean'].includes(type)) throw new TypeError('The inspected result contains an unsupported export value.');
+    add({ path: pointer, type, value: scalarProbeValue(value) });
+  };
+  visit(root, '');
+  return nodes;
+}
+
+function escapeJsonPointerToken(value) {
+  return String(value).replace(/~/gu, '~0').replace(/\//gu, '~1');
+}
+
+function scalarProbeValue(value) {
+  if (typeof value === 'number' && Object.is(value, -0)) return '-0';
+  return String(value);
+}
+
+function csvCell(value) {
+  return `"${String(value).replace(/"/gu, '""')}"`;
+}
+
+function serializeProbeCsv(nodes) {
+  const state = { bytes: 0, chunks: [] };
+  appendExportChunk(state, 'path,type,value\r\n');
+  for (const node of nodes) appendExportChunk(state, `${[node.path, node.type, node.value].map(csvCell).join(',')}\r\n`);
+  return state.chunks.join('');
+}
+
+function serializeProbeXml(nodes) {
+  const state = { bytes: 0, chunks: [] };
+  appendExportChunk(state, '<?xml version="1.0" encoding="UTF-8"?>\n<ffprobe-export schema-version="1">\n');
+  for (const node of nodes) {
+    assertXmlText(node.path);
+    assertXmlText(node.value);
+    appendExportChunk(state, `  <node path="${escapeXml(node.path)}" type="${node.type}">${escapeXml(node.value)}</node>\n`);
+  }
+  appendExportChunk(state, '</ffprobe-export>\n');
+  return state.chunks.join('');
+}
+
+function appendExportChunk(state, chunk) {
+  state.bytes += Buffer.byteLength(chunk, 'utf8');
+  if (state.bytes > MAX_PROBE_EXPORT_BYTES) throw new RangeError('The export exceeds the 32 MiB serialization limit.');
+  state.chunks.push(chunk);
+}
+
+function assertXmlText(value) {
+  for (const character of String(value)) {
+    const codePoint = character.codePointAt(0);
+    const allowed = codePoint === 0x09 || codePoint === 0x0a || codePoint === 0x0d
+      || (codePoint >= 0x20 && codePoint <= 0xd7ff)
+      || (codePoint >= 0xe000 && codePoint <= 0xfffd)
+      || (codePoint >= 0x10000 && codePoint <= 0x10ffff);
+    if (!allowed) throw new Error('The inspected result contains a character XML 1.0 cannot represent. Export JSON or CSV instead.');
+  }
+}
+
+function escapeXml(value) {
+  return String(value).replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;').replace(/'/gu, '&apos;');
 }
 
 function normalizedVersionLines(value) {
@@ -193,20 +308,6 @@ function fingerprintFile(filePath) {
     return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}`;
   } catch (error) {
     return `missing:${error && error.code ? error.code : 'unknown'}`;
-  }
-}
-
-function validateProbeExport(format, output) {
-  if (/\u0000/u.test(output)) throw new Error('ffprobe export contains a forbidden null byte.');
-  if (format === 'json') {
-    parseProbeJson(output, { maxBytes: 32 * 1024 * 1024 });
-    return;
-  }
-  if (format === 'xml' && !/^\s*(?:<\?xml[^>]*>\s*)?<ffprobe\b/u.test(output)) {
-    throw new Error('ffprobe XML export did not contain an ffprobe document root.');
-  }
-  if (format === 'csv' && !output.split(/\r?\n/u).some((line) => line.trim())) {
-    throw new Error('ffprobe CSV export did not contain a record.');
   }
 }
 

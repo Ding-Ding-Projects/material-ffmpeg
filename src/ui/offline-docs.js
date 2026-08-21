@@ -12,12 +12,13 @@
 const MAX_QUERY = 240;
 const MAX_ARTICLES = 500;
 const MAX_ARTICLE_BYTES = 512 * 1024;
+const MAX_INDEX_BYTES = 4 * 1024 * 1024;
 
 const text = (value) => String(value ?? '');
 const clampText = (value, max) => text(value).slice(0, max);
 const escapeHtml = (value) => text(value).replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
 
-function markdownToHtml(markdown) {
+function markdownToHtml(markdown, { linkMap = {} } = {}) {
   const source = clampText(markdown, MAX_ARTICLE_BYTES);
   const lines = source.split(/\r?\n/);
   const output = [];
@@ -25,7 +26,12 @@ function markdownToHtml(markdown) {
   let code = [];
   let listOpen = false;
   const inline = (value) => escapeHtml(value)
-    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" rel="noreferrer">$1</a>')
+    .replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, (_, label, href) => {
+      const target = linkMap[href] || linkMap[href.replace(/^\.\//, '')];
+      if (target) return `<a href="#" data-doc-link="${escapeHtml(target)}">${label}</a>`;
+      if (/^https:\/\//u.test(href)) return `<a href="${href}" rel="noreferrer">${label}</a>`;
+      return `<span title="Unavailable offline link: ${escapeHtml(href)}">${label}</span>`;
+    })
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/`([^`]+)`/g, '<code>$1</code>');
   const closeList = () => { if (listOpen) { output.push('</ul>'); listOpen = false; } };
@@ -51,12 +57,15 @@ function markdownToHtml(markdown) {
 
 function normalizeManifest(raw) {
   const rows = Array.isArray(raw) ? raw : raw?.articles;
-  if (!Array.isArray(rows)) return [];
-  return rows.slice(0, MAX_ARTICLES).map((article, index) => ({
+  if (!Array.isArray(rows)) return { articles: [], limits: {}, linkMap: {} };
+  const limits = raw && !Array.isArray(raw) && raw.limits && typeof raw.limits === 'object' ? raw.limits : {};
+  const linkMap = raw && !Array.isArray(raw) && raw.linkMap && typeof raw.linkMap === 'object' ? raw.linkMap : {};
+  const articles = rows.slice(0, Math.min(MAX_ARTICLES, Number(limits.maxArticles) || MAX_ARTICLES)).map((article, index) => ({
     id: clampText(article?.id ?? `article-${index + 1}`, 120),
     title: clampText(article?.title ?? article?.id ?? `Article ${index + 1}`, 240),
-    summary: clampText(article?.summary ?? '', 360)
+    summary: clampText(article?.summary ?? '', 360), bodyText: ''
   })).filter((article) => article.id && article.title);
+  return { articles, limits, linkMap };
 }
 
 function createRegexBuilder({ onChange, initialPattern = '', initialFlags = '' } = {}) {
@@ -94,7 +103,7 @@ export function mountOfflineDocsBrowser(container, api = {}) {
     container.textContent = 'Offline documentation is unavailable: the local article API is not connected.';
     return { destroy() {} };
   }
-  const state = { manifest: [], filtered: [], query: '', pattern: '', flags: '', regexMode: false, selected: 0, article: null, loading: false, error: '' };
+  const state = { manifest: [], limits: {}, linkMap: {}, filtered: [], query: '', pattern: '', flags: '', regexMode: false, selected: 0, article: null, loading: false, error: '' };
   const root = document.createElement('section');
   root.className = 'offline-docs-browser';
   root.setAttribute('aria-label', 'Offline documentation');
@@ -110,7 +119,7 @@ export function mountOfflineDocsBrowser(container, api = {}) {
   root.querySelector('[data-regex]').insertAdjacentElement('afterend', regex.root);
 
   const predicate = (record) => {
-    const haystack = `${record.title}\n${record.summary}`;
+    const haystack = `${record.title}\n${record.summary}\n${record.bodyText || ''}`;
     if (!state.regexMode || !state.pattern) return haystack.toLocaleLowerCase().includes(state.query.toLocaleLowerCase());
     try { return new RegExp(state.pattern, state.flags).test(haystack); } catch { return false; }
   };
@@ -121,7 +130,7 @@ export function mountOfflineDocsBrowser(container, api = {}) {
     list.replaceChildren(...state.filtered.map((record, index) => { const item = document.createElement('li'); const button = document.createElement('button'); button.type = 'button'; button.dataset.index = String(index); button.textContent = record.title; button.setAttribute('aria-current', state.article?.id === record.id ? 'page' : 'false'); button.className = index === state.selected ? 'is-selected' : ''; button.addEventListener('click', () => openArticle(record)); item.append(button); return item; }));
     status.textContent = state.error || `${state.filtered.length} article${state.filtered.length === 1 ? '' : 's'} available offline.`;
     copy.disabled = !state.article; exportButton.disabled = !state.article;
-    if (state.article) { article.innerHTML = `<h1>${escapeHtml(state.article.title)}</h1>${markdownToHtml(state.article.markdown)}`; }
+    if (state.article) { article.innerHTML = `<h1>${escapeHtml(state.article.title)}</h1>${markdownToHtml(state.article.markdown, { linkMap: state.linkMap })}`; }
   }
   async function openArticle(record) {
     state.loading = true; state.error = ''; render();
@@ -131,10 +140,30 @@ export function mountOfflineDocsBrowser(container, api = {}) {
   }
   search.addEventListener('input', () => { state.query = clampText(search.value, MAX_QUERY); state.regexMode = false; state.pattern = ''; applyFilter(); render(); });
   root.querySelector('[data-regex]').addEventListener('click', () => regex.open());
+  article.addEventListener('click', (event) => { const link = event.target.closest('[data-doc-link]'); if (!link) return; event.preventDefault(); const target = state.manifest.find((record) => record.id === link.dataset.docLink); if (target) openArticle(target); else status.textContent = 'That documentation link is unavailable in this package.'; });
   list.addEventListener('keydown', (event) => { if (!state.filtered.length) return; if (event.key === 'ArrowDown') { event.preventDefault(); state.selected = Math.min(state.selected + 1, state.filtered.length - 1); render(); } else if (event.key === 'ArrowUp') { event.preventDefault(); state.selected = Math.max(state.selected - 1, 0); render(); } else if (event.key === 'Enter') { event.preventDefault(); openArticle(state.filtered[state.selected]); } });
   copy.addEventListener('click', async () => { if (!state.article) return; const response = await api.copyText(state.article.markdown); status.textContent = response?.ok ? 'Article copied to the clipboard.' : `Copy unavailable: ${clampText(response?.error || 'the local clipboard bridge is unavailable', 180)}`; });
   exportButton.addEventListener('click', async () => { if (!state.article) return; const response = await api.exportArticle(state.article); status.textContent = response?.ok ? (response.cancelled ? 'Export cancelled.' : 'Article export requested.') : `Export unavailable: ${clampText(response?.error || 'the local export bridge is unavailable', 180)}`; });
-  (async () => { try { const response = await api.getManifest(); if (!response?.ok) throw new Error(response?.error || 'No bundled manifest is available.'); state.manifest = normalizeManifest(response.value); applyFilter(); render(); if (state.manifest[0]) await openArticle(state.manifest[0]); else { state.error = 'No bundled documentation articles are available.'; render(); } } catch (error) { state.error = `Offline documentation manifest unavailable: ${clampText(error.message, 180)}`; render(); } })();
+  (async () => {
+    try {
+      const response = await api.getManifest();
+      if (!response?.ok) throw new Error(response?.error || 'No bundled manifest is available.');
+      const normalized = normalizeManifest(response.value);
+      state.manifest = normalized.articles; state.limits = normalized.limits; state.linkMap = Object.fromEntries(Object.entries(normalized.linkMap).slice(0, MAX_ARTICLES).map(([key, value]) => [clampText(key, 240), clampText(value, 120)]));
+      let indexedBytes = 0;
+      for (const record of state.manifest) {
+        if (indexedBytes >= MAX_INDEX_BYTES) break;
+        const articleResponse = await api.readArticle(record.id);
+        if (!articleResponse?.ok) continue;
+        const raw = articleResponse.value; const markdown = typeof raw === 'string' ? raw : raw?.markdown;
+        if (typeof markdown !== 'string') continue;
+        const bounded = clampText(markdown, MAX_ARTICLE_BYTES); const bytes = typeof TextEncoder === 'function' ? new TextEncoder().encode(bounded).byteLength : bounded.length;
+        if (indexedBytes + bytes > MAX_INDEX_BYTES) continue;
+        record.bodyText = bounded; indexedBytes += bytes;
+      }
+      applyFilter(); render(); if (state.manifest[0]) await openArticle(state.manifest[0]); else { state.error = 'No bundled documentation articles are available.'; render(); }
+    } catch (error) { state.error = `Offline documentation manifest unavailable: ${clampText(error.message, 180)}`; render(); }
+  })();
   return { destroy() { root.remove(); } };
 }
 

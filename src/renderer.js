@@ -50,6 +50,17 @@ const COMPOSER_FORMATS = Object.freeze({
   gif: { extension: 'gif', extensions: ['gif'], label: 'GIF image' },
   image2: { extension: 'png', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'], label: 'Single image' }
 });
+const MAX_CONVERTER_FILES = 64;
+const CONVERTER_TARGETS = Object.freeze({
+  mp4: Object.freeze({ adapter: 'video/mp4-h264-aac', label: 'MP4 (H.264 + AAC)', requirement: 'a video stream' }),
+  mkv: Object.freeze({ adapter: 'video/mkv-copy', label: 'MKV (stream copy)', requirement: 'an audio or video stream' }),
+  webm: Object.freeze({ adapter: 'video/webm-vp9-opus', label: 'WebM (VP9 + Opus)', requirement: 'a video stream' }),
+  mp3: Object.freeze({ adapter: 'audio/mp3', label: 'MP3 audio', requirement: 'an audio stream' }),
+  flac: Object.freeze({ adapter: 'audio/flac', label: 'FLAC audio', requirement: 'an audio stream' }),
+  wav: Object.freeze({ adapter: 'audio/wav-pcm-s24le', label: 'WAV (24-bit PCM)', requirement: 'an audio stream' }),
+  png: Object.freeze({ adapter: 'image/png', label: 'PNG still image', requirement: 'a video stream' }),
+  jpg: Object.freeze({ adapter: 'image/jpeg', label: 'JPEG still image', requirement: 'a video stream' })
+});
 const store = {
   get(key, fallback) { try { return JSON.parse(localStorage.getItem(`material-ffmpeg.${key}`)) ?? fallback; } catch { return fallback; } },
   set(key, value) { try { localStorage.setItem(`material-ffmpeg.${key}`, JSON.stringify(value)); } catch { } }
@@ -176,7 +187,8 @@ const state = {
   inputs: {}, outputs: {}, probe: null, probeError: '', probeExportError: '', probeExportFormat: '',
   audioProbeError: '', audioStreams: [], audioInspecting: false, audioInspectionRequest: 0,
   filters: normalizeFilters(store.get('filters', [{ kind: 'video', name: 'scale', options: { width: 1920, height: -2, flags: 'lanczos' } }])), selectedFilter: 0,
-  presets: store.get('presets', []), converterFiles: [], tabs: normalizeTabs(store.get('tabs', DEFAULT_TABS)),
+  presets: store.get('presets', []), converterFiles: [], converterBusy: false, converterSummary: null,
+  tabs: normalizeTabs(store.get('tabs', DEFAULT_TABS)),
   notifications: store.get('notifications', []),
   settings: normalizeSettings(store.get('settings', {})),
   loudnormPending: {}, loudnormRecoveryNotice: '', loudnormRecoveryPending: false,
@@ -272,6 +284,40 @@ const normalizeFiles = (result) => (Array.isArray(result) ? result : result ? [r
     details: bounded(item.details || '', 300),
     supported: item.supported !== false
   };
+}).filter(Boolean);
+
+const currentConverterTarget = () => Object.hasOwn(CONVERTER_TARGETS, state.form.converterTarget) ? state.form.converterTarget : 'mp4';
+const refreshConverterCompatibility = (file) => {
+  const target = currentConverterTarget();
+  const inspected = file.status === 'ready';
+  file.supported = inspected && Array.isArray(file.supportedTargets) && file.supportedTargets.includes(target);
+  file.statusLabel = file.status === 'inspection-failed' ? 'INSPECTION FAILED'
+    : file.supported ? 'READY' : file.status === 'unsupported' ? 'UNSUPPORTED' : 'NOT COMPATIBLE';
+  file.supportReason = file.supported || file.status === 'inspection-failed' || file.status === 'unsupported'
+    ? ''
+    : `${CONVERTER_TARGETS[target].label} requires ${CONVERTER_TARGETS[target].requirement}.`;
+  return file;
+};
+const normalizeConverterItems = (value) => (Array.isArray(value) ? value : []).slice(0, MAX_CONVERTER_FILES).map((item, index) => {
+  if (!item || typeof item !== 'object' || Array.isArray(item) || !HANDLE_RE.test(String(item.handle || '')) || item.kind !== 'input') return null;
+  const supportedTargets = Array.isArray(item.supportedTargets)
+    ? [...new Set(item.supportedTargets.filter((target) => Object.hasOwn(CONVERTER_TARGETS, target)))].slice(0, Object.keys(CONVERTER_TARGETS).length)
+    : [];
+  const status = ['ready', 'unsupported', 'inspection-failed'].includes(item.status) ? item.status : 'inspection-failed';
+  return refreshConverterCompatibility({
+    handle: String(item.handle),
+    name: bounded(item.name || `Selected file ${index + 1}`, 240),
+    kind: 'input',
+    details: bounded(item.details || item.error || 'Media inspection returned no details.', 500),
+    error: bounded(item.error || '', 500),
+    status,
+    supportedTargets,
+    streams: item.streams && typeof item.streams === 'object' ? {
+      video: clamp(item.streams.video, 0, 512),
+      audio: clamp(item.streams.audio, 0, 512),
+      subtitle: clamp(item.streams.subtitle, 0, 512)
+    } : { video: 0, audio: 0, subtitle: 0 }
+  });
 }).filter(Boolean);
 
 async function pickFile(slot, options = {}) {
@@ -973,7 +1019,13 @@ const VIEWS = {
     return `${pageHead('Structured argv', 'Command composer', 'Build one bounded FFmpeg argument vector without entering an executable, shell command, or local path.', '<button class="filled" id="queue-composer">Queue command</button>')}<div class="grid"><div class="card span5"><h2>Trusted files and output</h2><div class="list">${pickerCard('composer','Input')}${pickerCard('composer','Output',true)}</div>${field('Output format', select('composer-format', Object.keys(COMPOSER_FORMATS), state.form.composerFormat))}<p class="notice">The format selector owns <code>-f</code>. The native pickers own <code>-i</code> and the final output. Those managed arguments cannot be typed below.</p><p class="hint">Blank lines are ignored. Executable names, shell operators, protocols, local paths, path-reading options, and implicit file outputs are rejected before enqueueing.</p></div><div class="card span7"><h2>Scoped option rows</h2><p class="hint">Enter one option name per line, followed by its scalar value on the next line. A flag needs no value.</p><div class="two-col">${field('Global options',`<textarea id="composer-global-args" class="mono" rows="6" maxlength="${COMPOSER_TEXT_LIMIT}" placeholder="-loglevel&#10;warning">${esc(state.form.composerGlobalArgs)}</textarea>`)}${field('Input options',`<textarea id="composer-input-args" class="mono" rows="6" maxlength="${COMPOSER_TEXT_LIMIT}" placeholder="-ss&#10;00:00:05.000">${esc(state.form.composerInputArgs)}</textarea>`)}</div>${field('Output options',`<textarea id="composer-args" class="mono" rows="8" maxlength="${COMPOSER_TEXT_LIMIT}" placeholder="-c:v&#10;libx264">${esc(state.form.composerArgs)}</textarea>`)}<h2>Bounded preview</h2><p class="notice" id="composer-error" role="alert"${preview.error ? '' : ' hidden'}>${esc(preview.error)}</p><pre class="cmd-pre" id="composer-preview">${esc(preview.text)}</pre><small id="composer-preview-facts">${esc(preview.facts)}</small></div></div>`;
   },
 
-  converter: () => `${pageHead('Media conversion', 'File converter', 'Add a real batch, inspect actual media types, choose a supported target, and queue each file.', '<button class="outlined" id="converter-add">Add files</button><button class="filled" id="queue-converter">Queue supported files</button>')}<div class="grid"><div class="card span7"><div class="list">${state.converterFiles.length ? state.converterFiles.map((file,index) => `<div class="list-item"><span class="ms">draft</span><span style="flex:1"><b>${esc(displayText(file.name, 'input file'))}</b><br><small>${esc(displayText(file.details || file.kind || 'Type will be validated by the runtime', 'file detail'))}</small></span><span class="tag${file.supported ? '' : ' idle'}">${file.supported ? 'READY' : 'UNSUPPORTED'}</span><button class="converter-remove" data-index="${index}">×</button></div>`).join('') : '<div class="empty-state"><b>No files added</b><br><small>The runtime performs bounded byte detection; extensions are not trusted.</small></div>'}</div></div><div class="card span5"><h2>Target</h2>${field('Output type',select('converter-target',['mp4','mkv','webm','mp3','flac','wav','png','jpg'],state.form.converterTarget))}<p class="notice">Media conversions may be lossy. Originals remain untouched and each queued result is validated by the runtime.</p></div></div>`,
+  converter: () => {
+    const target = currentConverterTarget();
+    const eligible = state.converterFiles.filter((file) => file.supported).length;
+    const busy = state.converterBusy ? ' disabled' : '';
+    const summary = state.converterSummary;
+    return `${pageHead('Media conversion', 'File converter', 'Select a bounded batch, inspect each file through FFprobe, choose one target and one destination folder, then queue every eligible item.', `<button class="outlined" id="converter-add"${busy}>${state.converterBusy ? 'Inspecting…' : 'Add files'}</button><button class="filled" id="queue-converter"${busy || !eligible ? ' disabled' : ''}>Choose folder & queue ${eligible}</button>`)}<div class="grid"><div class="card span7"><div class="section-head"><h2>Inspected inputs</h2><span class="tag">${state.converterFiles.length}/${MAX_CONVERTER_FILES}</span></div><div class="list">${state.converterFiles.length ? state.converterFiles.map((file,index) => `<div class="list-item"><span class="ms">draft</span><span style="flex:1"><b>${esc(displayText(file.name, 'input file'))}</b><br><small>${esc(displayText(file.details || 'Media inspection returned no details.', 'file detail'))}${file.supportReason ? `<br>${esc(file.supportReason)}` : ''}</small></span><span class="tag${file.supported ? '' : ' idle'}">${esc(file.statusLabel)}</span><button class="converter-remove" data-index="${index}" aria-label="Remove ${esc(displayText(file.name, 'input file'))}"${busy}>×</button></div>`).join('') : '<div class="empty-state"><b>No files added</b><br><small>Native selection returns opaque handles. Up to 64 inputs are inspected four at a time; extensions alone never decide support.</small></div>'}</div></div><div class="card span5"><h2>Target and destination</h2>${field('Output type',select('converter-target',Object.keys(CONVERTER_TARGETS),target))}<p class="hint"><b>${esc(CONVERTER_TARGETS[target].label)}</b> requires ${esc(CONVERTER_TARGETS[target].requirement)}. ${eligible} of ${state.converterFiles.length} selected files are eligible.</p><p class="notice">Choose one output folder when queueing. Unique output names are planned inside that folder, existing files are not overwritten, originals stay untouched, and each completed job validates its output.</p>${summary ? `<p class="notice"><b>Last batch:</b> ${summary.queued} queued, ${summary.failed} failed to queue, ${summary.skipped} skipped as unsupported${summary.destinationName ? ` · destination ${esc(displayText(summary.destinationName, 'output folder'))}` : ''}.</p>` : ''}</div></div>`;
+  },
 
   settings: () => `${pageHead('Application', 'Settings', 'Execution, appearance, and message voice preferences persist locally.', '')}<div class="grid"><div class="card span6"><h2>Appearance</h2><div class="seg"><button id="theme-dark" class="${state.theme === 'dark' ? 'active' : ''}">Dark</button><button id="theme-light" class="${state.theme === 'light' ? 'active' : ''}">Light</button></div><button class="tonal" id="logo-settings" style="margin-top:14px">Customize app logo</button></div>
     <div class="card span6"><h2>Execution</h2>${field('Parallel jobs (1–4)',input('setting-parallel',state.settings.parallel,'number','min="1" max="4"'))}<p class="hint">Saving applies this limit immediately to the trusted job scheduler. Running jobs continue; newly available slots start queued work.</p><label class="check-row"><input id="setting-hardware" type="checkbox"${state.settings.preferHardware ? ' checked' : ''}> Prefer hardware encoders reported by runtime</label><label class="check-row"><input id="setting-passlogs" type="checkbox"${state.settings.keepPassLogs ? ' checked' : ''}> Keep intermediate two-pass logs</label><label class="check-row"><input id="setting-notify" type="checkbox"${state.settings.notifyComplete ? ' checked' : ''}> Notify on job completion</label></div>
@@ -1330,7 +1382,7 @@ function wireView() {
   $$('#palette-open,#palette-open-2').forEach((button) => button.onclick = openPalette);
   $$('.pick-input').forEach((button) => button.onclick = async () => { const files = await pickFile(button.dataset.slot, { multiple: false, purpose: button.dataset.slot }); if (files.length && ['audio','inspector'].includes(button.dataset.slot)) inspectSelected(button.dataset.slot); });
   $$('.pick-output').forEach((button) => button.onclick = () => chooseOutput(button.dataset.slot, Object.assign({ purpose: button.dataset.slot }, outputOptions(button.dataset.slot))));
-  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-container','trimContainer'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-stream','audioStream'],['audio-bitrate','audioBitrate'],['audio-sample-rate','audioSampleRate'],['audio-channels','audioChannels'],['gif-start','gifStart'],['gif-duration','gifDuration'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-height','gifHeight',true],['gif-scaler','gifScaler'],['gif-colors','gifColors',true],['gif-stats','gifStatsMode'],['gif-dither','gifDither'],['gif-bayer-scale','gifBayerScale',true],['gif-loop','gifLoop',true],['thumb-time','thumbTime'],['thumb-width','thumbWidth',true],['thumb-height','thumbHeight',true],['thumb-scaler','thumbScaler'],['thumb-quality','thumbQuality',true],['stream-target','streamTarget'],['stream-video-bitrate','streamVideoBitrate'],['stream-audio-bitrate','streamAudioBitrate'],['stream-resolution','streamResolution'],['stream-fps','streamFps'],['stream-gop','streamGop',true],['hls-time','hlsTime',true],['hls-list','hlsList',true],['hls-playlist-type','hlsPlaylistType'],['hls-segment-type','hlsSegmentType'],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
+  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-container','trimContainer'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-stream','audioStream'],['audio-bitrate','audioBitrate'],['audio-sample-rate','audioSampleRate'],['audio-channels','audioChannels'],['gif-start','gifStart'],['gif-duration','gifDuration'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-height','gifHeight',true],['gif-scaler','gifScaler'],['gif-colors','gifColors',true],['gif-stats','gifStatsMode'],['gif-dither','gifDither'],['gif-bayer-scale','gifBayerScale',true],['gif-loop','gifLoop',true],['thumb-time','thumbTime'],['thumb-width','thumbWidth',true],['thumb-height','thumbHeight',true],['thumb-scaler','thumbScaler'],['thumb-quality','thumbQuality',true],['stream-target','streamTarget'],['stream-video-bitrate','streamVideoBitrate'],['stream-audio-bitrate','streamAudioBitrate'],['stream-resolution','streamResolution'],['stream-fps','streamFps'],['stream-gop','streamGop',true],['hls-time','hlsTime',true],['hls-list','hlsList',true],['hls-playlist-type','hlsPlaylistType'],['hls-segment-type','hlsSegmentType']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
   const audioFormat = $('#audio-format'); if (audioFormat) audioFormat.onchange = () => {
     const priorExtension = audioExtractionFormat().extension;
     state.form.audioFormat = AUDIO_EXTRACTION_FORMATS[audioFormat.value] ? audioFormat.value : 'mka-copy';
@@ -1402,8 +1454,23 @@ function wireView() {
   const composerFormat = $('#composer-format'); if (composerFormat) composerFormat.onchange = () => { state.form.composerFormat = composerFormat.value; saveUi(); render(); };
   if ($('#composer-preview')) updatePreviews();
   $('#queue-composer')?.addEventListener('click', queueComposer);
+  const converterTarget = $('#converter-target');
+  if (converterTarget) converterTarget.onchange = () => {
+    state.form.converterTarget = Object.hasOwn(CONVERTER_TARGETS, converterTarget.value) ? converterTarget.value : 'mp4';
+    state.converterFiles.forEach(refreshConverterCompatibility);
+    state.converterSummary = null;
+    saveUi();
+    render();
+  };
   $('#converter-add')?.addEventListener('click', addConverterFiles); $('#queue-converter')?.addEventListener('click', queueConverterFiles);
-  $$('.converter-remove').forEach((button) => button.onclick = () => { state.converterFiles.splice(Number(button.dataset.index),1); render(); });
+  $$('.converter-remove').forEach((button) => button.onclick = async () => {
+    const [removed] = state.converterFiles.splice(Number(button.dataset.index), 1);
+    if (removed?.handle) {
+      try { await apiCall('converter.releaseHandles', [removed.handle]); } catch { }
+    }
+    state.converterSummary = null;
+    render();
+  });
 
   $('#copy-current-command')?.addEventListener('click', () => navigator.clipboard.writeText(convertPreview()).then(() => notify('Copied','Command preview copied.')).catch((error) => notify('Copy failed',error.message,'error')));
   $('#theme-dark')?.addEventListener('click', () => { state.theme = 'dark'; render(); }); $('#theme-light')?.addEventListener('click', () => { state.theme = 'light'; render(); }); $('#logo-settings')?.addEventListener('click', openLogo);
@@ -1621,30 +1688,112 @@ function filterLogs() {
   $('#log-pane').replaceChildren(...(selected?.logs || []).filter((line) => line.toLowerCase().includes(query)).map((line) => { const div = document.createElement('div'); div.textContent = displayText(line, 'job file'); return div; }));
 }
 async function addConverterFiles() {
-  const files = await pickFile(null,{multiple:true,purpose:'converter'});
-  for (const file of files) {
-    try { const probe = await apiCall('probe.inspect',file.handle); file.details = bounded(probe?.format?.format_long_name || probe?.format?.format_name || file.details || 'Media detected by runtime',300); file.supported = true; }
-    catch (error) { file.details = bounded(error.message,300); file.supported = false; }
-    state.converterFiles.push(file);
+  if (state.converterBusy) return;
+  if (!state.runtime.available) return notify('Bundled runtime unavailable',state.runtime.error || 'The bundled FFmpeg and FFprobe runtime is unavailable.','error');
+  state.converterBusy = true;
+  state.converterSummary = null;
+  render();
+  try {
+    const result = await apiCall('converter.selectInputs');
+    if (result?.canceled) return;
+    const inspected = normalizeConverterItems(result?.items);
+    const remaining = Math.max(0, MAX_CONVERTER_FILES - state.converterFiles.length);
+    const accepted = inspected.slice(0, remaining);
+    const overflow = inspected.slice(remaining);
+    state.converterFiles.push(...accepted);
+    const rejected = Array.isArray(result?.rejected) ? result.rejected.length : 0;
+    if (overflow.length) {
+      try { await apiCall('converter.releaseHandles', overflow.map((file) => file.handle)); } catch { }
+    }
+    const inspectionFailures = accepted.filter((file) => file.status === 'inspection-failed').length;
+    const notMedia = accepted.filter((file) => file.status === 'unsupported').length;
+    const omitted = rejected + overflow.length;
+    if (inspectionFailures || notMedia || omitted) {
+      notify('Batch inspection completed', `${accepted.length} added; ${inspectionFailures} inspection failures, ${notMedia} unsupported inputs, and ${omitted} selections omitted.`, 'error');
+    } else if (accepted.length) {
+      notify('Batch inspection completed', `${accepted.length} files were inspected through the bounded FFprobe route.`);
+    }
+  } catch (error) {
+    notify('Batch selection failed',error.message,'error');
+  } finally {
+    state.converterBusy = false;
+    render();
   }
-  state.converterFiles = state.converterFiles.slice(0,500); render();
 }
 async function queueConverterFiles() {
-  const files = state.converterFiles.filter((file) => file.supported); if (!files.length) return notify('No supported files','Add at least one media file that the runtime can inspect.','error');
+  if (state.converterBusy) return;
+  const files = state.converterFiles.filter((file) => file.supported); if (!files.length) return notify('No supported files','Add at least one inspected file compatible with the selected target.','error');
   if (!state.runtime.available) return notify('Bundled runtime unavailable',state.runtime.error || 'The bundled FFmpeg runtime is unavailable.','error');
-  const adapters = { mp4:'video/mp4-h264-aac',mkv:'video/mkv-copy',webm:'video/webm-vp9-opus',mp3:'audio/mp3',flac:'audio/flac',wav:'audio/wav-pcm-s24le',png:'image/png',jpg:'image/jpeg' };
-  const adapter = adapters[state.form.converterTarget]; if (!adapter) return notify('Target unavailable',`No bundled adapter is available for ${state.form.converterTarget}.`,'error');
-  let queued = 0;
-  for (const file of files) {
-    try {
-      const stem = file.name.replace(/\.[^.]+$/u,'').slice(0,180) || 'output';
-      const output = normalizeFiles(await apiCall('files.save',{suggestedName:`${stem}.${state.form.converterTarget}`,filters:[{name:state.form.converterTarget.toUpperCase(),extensions:[state.form.converterTarget]}]}))[0];
-      if (!output) continue; state.outputs[`converter-${queued}`]=output;
-      const argv = build('converter',{ input:file.handle, output:output.handle, adapter }); await apiCall('jobs.enqueue',{label:`${file.name} → ${state.form.converterTarget}`,args:runtimeArgs(argv)}); queued += 1;
+  const target = currentConverterTarget();
+  const definition = CONVERTER_TARGETS[target];
+  state.converterBusy = true;
+  state.converterSummary = null;
+  render();
+  try {
+    const prepared = await apiCall('converter.prepareOutputs', { target, inputHandles: files.map((file) => file.handle) });
+    if (prepared?.canceled) {
+      notify('Batch not queued','No destination folder was selected; the queue and original files were unchanged.');
+      return;
     }
-    catch (error) { notify(`Could not queue ${file.name}`,error.message,'error'); }
+    if (prepared?.target !== target || prepared?.adapter !== definition.adapter) throw new Error('The prepared converter target did not match the selected adapter.');
+    const preparedOutputs = Array.isArray(prepared.outputs) ? prepared.outputs : [];
+    const outputByInput = new Map();
+    for (const entry of preparedOutputs) {
+      if (!entry || !HANDLE_RE.test(String(entry.inputHandle || ''))) continue;
+      const output = normalizeFiles(entry.output)[0];
+      if (output?.kind === 'output') outputByInput.set(String(entry.inputHandle), output);
+    }
+
+    const succeeded = new Set();
+    const failures = [];
+    const outputHandles = [];
+    for (const file of files) {
+      const output = outputByInput.get(file.handle);
+      if (!output) {
+        const preparedFailure = Array.isArray(prepared.failures) ? prepared.failures.find((entry) => entry?.inputHandle === file.handle) : null;
+        failures.push({ file, error: bounded(preparedFailure?.error || 'No trusted output handle was prepared for this input.', 500) });
+        continue;
+      }
+      outputHandles.push(output.handle);
+      const outputKey = `converter-${file.handle}`;
+      state.outputs[outputKey] = output;
+      try {
+        const argv = build('converter',{ input:file.handle, output:output.handle, adapter:definition.adapter, overwrite:false });
+        await apiCall('jobs.enqueue',{label:`${file.name} → ${target}`,args:runtimeArgs(argv)});
+        succeeded.add(file.handle);
+      } catch (error) {
+        failures.push({ file, error: bounded(error.message, 500) });
+      } finally {
+        delete state.outputs[outputKey];
+      }
+    }
+
+    try { await apiCall('converter.releaseHandles', [...outputHandles, ...succeeded]); } catch { }
+    const skipped = state.converterFiles.length - files.length;
+    state.converterFiles = state.converterFiles.filter((file) => !succeeded.has(file.handle));
+    state.converterFiles.forEach(refreshConverterCompatibility);
+    state.converterSummary = {
+      target,
+      destinationName: bounded(prepared.destinationName || '', 255),
+      queued: succeeded.size,
+      failed: failures.length,
+      skipped
+    };
+    if (failures.length || skipped) {
+      const firstFailure = failures[0];
+      const detail = firstFailure ? ` First failure: ${displayText(firstFailure.file.name, 'input file')}: ${displayText(firstFailure.error, 'job error')}` : '';
+      notify('Batch partially queued',`${succeeded.size} queued, ${failures.length} failed to queue, and ${skipped} unsupported files were skipped.${detail}`,'error');
+    } else {
+      notify('Batch queued',`${succeeded.size} conversion jobs were added without overwriting existing files.`);
+    }
+    if (succeeded.size && !failures.length && !skipped) state.view = 'jobs';
+    await refreshJobs();
+  } catch (error) {
+    notify('Batch queueing failed',error.message,'error');
+  } finally {
+    state.converterBusy = false;
+    render();
   }
-  if (queued) { notify('Batch queued',`${queued} conversion jobs added.`); state.view='jobs'; await refreshJobs(); }
 }
 async function refreshRuntime() {
   state.runtime.loading = true; state.runtime.error = ''; render();

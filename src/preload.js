@@ -30,6 +30,11 @@ contextBridge.exposeInMainWorld('api', Object.freeze({
   composer: Object.freeze({
     enqueue: (request) => ipcRenderer.invoke('composer:enqueue', request)
   }),
+  converter: Object.freeze({
+    selectInputs: () => ipcRenderer.invoke('converter:select-inputs'),
+    prepareOutputs: (spec) => ipcRenderer.invoke('converter:prepare-outputs', spec),
+    releaseHandles: (handles) => ipcRenderer.invoke('converter:release-handles', handles)
+  }),
   jobs: Object.freeze({
     enqueue: (spec) => ipcRenderer.invoke('jobs:enqueue', spec),
     list: () => ipcRenderer.invoke('jobs:list'),

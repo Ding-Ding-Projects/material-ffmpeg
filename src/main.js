@@ -3,6 +3,7 @@
 const path = require('path');
 const { pathToFileURL } = require('url');
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { MAX_BATCH_FILES, inspectInputs, normalizeTarget, prepareOutputs } = require('./runtime/converter-batch');
 const { FileRegistry } = require('./runtime/file-registry');
 const { JobManager } = require('./runtime/job-manager');
 const { RuntimeService } = require('./runtime/runtime-service');
@@ -126,6 +127,62 @@ function registerIpc(runtime) {
       input: files.retain(spec.inputHandle, 'input'),
       output: files.retain(spec.outputHandle, 'output')
     };
+  });
+  trustedHandle('converter:select-inputs', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: `Select up to ${MAX_BATCH_FILES} media files`,
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: 'Media files', extensions: ['*'] }]
+    });
+    if (result.canceled) return { canceled: true, items: [], rejected: [], selectionLimit: MAX_BATCH_FILES };
+
+    const selectedPaths = result.filePaths.slice(0, MAX_BATCH_FILES);
+    const rejected = result.filePaths.slice(MAX_BATCH_FILES).map((filePath) => ({
+      name: path.basename(filePath).slice(0, 255),
+      error: `The batch selection limit is ${MAX_BATCH_FILES} files.`
+    }));
+    const handles = [];
+    for (const filePath of selectedPaths) {
+      try {
+        handles.push(files.register(filePath, 'input').handle);
+      } catch (error) {
+        rejected.push({ name: path.basename(filePath).slice(0, 255), error: String(error.message || error).slice(0, 500) });
+      }
+    }
+    const items = handles.length
+      ? await inspectInputs(handles, { fileRegistry: files, inspect: (handle) => runtime.inspect(handle) })
+      : [];
+    return { canceled: false, items, rejected, selectionLimit: MAX_BATCH_FILES };
+  });
+  trustedHandle('converter:prepare-outputs', async (spec = {}) => {
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec) ||
+      Object.keys(spec).some((key) => key !== 'target' && key !== 'inputHandles')) {
+      throw new TypeError('Invalid converter output request.');
+    }
+    const target = normalizeTarget(spec.target);
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: `Choose a folder for ${target.toUpperCase()} outputs`,
+      properties: ['openDirectory', 'createDirectory']
+    });
+    if (result.canceled || result.filePaths.length !== 1) {
+      return { canceled: true, target, outputs: [], failures: [] };
+    }
+    return {
+      canceled: false,
+      ...prepareOutputs({ directory: result.filePaths[0], target, inputHandles: spec.inputHandles, fileRegistry: files })
+    };
+  });
+  trustedHandle('converter:release-handles', (handles) => {
+    if (!Array.isArray(handles) || handles.length > MAX_BATCH_FILES * 2 || handles.some((handle) => typeof handle !== 'string')) {
+      throw new TypeError('Invalid converter handle release request.');
+    }
+    let released = 0;
+    for (const handle of [...new Set(handles)]) {
+      try {
+        if (files.release(handle)) released += 1;
+      } catch { }
+    }
+    return { requested: handles.length, released };
   });
 
   trustedHandle('probe:inspect', (fileHandle) => runtime.inspect(fileHandle));

@@ -112,7 +112,7 @@
       const cached = options.refresh ? null : readRuntimeCache(cacheKey);
       if (cached) return cached;
       try {
-        const normalized = normalizeCatalogPayload(await withRuntimeTimeout(cacheKey, () => api.list(safeKind)), limit);
+        const normalized = normalizeCatalogPayload(await withRuntimeTimeout(cacheKey, () => api.list(safeKind, { limit, refresh: options.refresh === true })), limit);
         const result = { status: normalized.items.length ? 'ready' : 'empty', kind: safeKind, ...normalized };
         return writeRuntimeCache(cacheKey, result);
       } catch (error) {
@@ -128,7 +128,7 @@
       const cached = options.refresh ? null : readRuntimeCache(cacheKey);
       if (cached) return cached;
       try {
-        const normalized = normalizeHelpPayload(await withRuntimeTimeout(cacheKey, () => api.help(safeKind, safeName)));
+        const normalized = normalizeHelpPayload(await withRuntimeTimeout(cacheKey, () => api.help(safeKind, safeName, { maxChars: RUNTIME_LIMITS.help, refresh: options.refresh === true })));
         const result = { status: normalized.text.trim() ? 'ready' : 'empty', kind: safeKind, name: safeName, ...normalized };
         return writeRuntimeCache(cacheKey, result);
       } catch (error) {

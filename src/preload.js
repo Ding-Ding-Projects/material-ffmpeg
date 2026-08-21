@@ -17,8 +17,8 @@ contextBridge.exposeInMainWorld('api', Object.freeze({
     save: (options) => ipcRenderer.invoke('files:save', options)
   }),
   catalog: Object.freeze({
-    list: (kind) => ipcRenderer.invoke('catalog:list', kind),
-    help: (kind, name) => ipcRenderer.invoke('catalog:help', kind, name)
+    list: (kind, options) => ipcRenderer.invoke('catalog:list', kind, options),
+    help: (kind, name, options) => ipcRenderer.invoke('catalog:help', kind, name, options)
   }),
   probe: Object.freeze({
     inspect: (fileHandle) => ipcRenderer.invoke('probe:inspect', fileHandle),

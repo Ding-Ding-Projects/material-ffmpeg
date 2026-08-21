@@ -12,7 +12,29 @@ const { composer: buildComposerArgs } = require('./ui/command-builders');
 let mainWindow = null;
 let jobs = null;
 let shuttingDown = false;
+const pendingJobEvents = [];
+let pendingQueueStateError = null;
 const files = new FileRegistry();
+
+function publishJobEvent(payload) {
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.send('jobs:event', payload);
+    return;
+  }
+  if (payload?.type === 'state-error') {
+    pendingQueueStateError = payload;
+    return;
+  }
+  pendingJobEvents.push(payload);
+  if (pendingJobEvents.length > 128) pendingJobEvents.splice(0, pendingJobEvents.length - 128);
+}
+
+function flushJobEvents() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (pendingQueueStateError) mainWindow.webContents.send('jobs:event', pendingQueueStateError);
+  pendingQueueStateError = null;
+  pendingJobEvents.splice(0).forEach((payload) => mainWindow.webContents.send('jobs:event', payload));
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -38,6 +60,7 @@ function createWindow() {
     if (url !== allowedUrl) event.preventDefault();
   });
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.webContents.once('did-finish-load', flushJobEvents);
   mainWindow.on('closed', () => { mainWindow = null; });
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
 }
@@ -69,8 +92,8 @@ function registerIpc(runtime) {
 
   trustedHandle('runtime:status', () => runtime.status());
   trustedHandle('runtime:catalog', () => runtime.catalog());
-  trustedHandle('catalog:list', (kind) => runtime.list(kind));
-  trustedHandle('catalog:help', (kind, name) => runtime.help(kind, name));
+  trustedHandle('catalog:list', (kind, options) => runtime.list(kind, options));
+  trustedHandle('catalog:help', (kind, name, options) => runtime.help(kind, name, options));
 
   trustedHandle('files:open', async (options = {}) => {
     const multiple = Boolean(options && options.multiple);
@@ -171,7 +194,7 @@ app.whenReady().then(() => {
     concurrency: 2
   });
   jobs.on('event', (payload) => {
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('jobs:event', payload);
+    publishJobEvent(payload);
   });
   jobs.initialize();
   registerIpc(runtime);

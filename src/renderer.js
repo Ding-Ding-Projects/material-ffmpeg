@@ -161,7 +161,8 @@ const state = {
     ffprobeAvailable: false, origin: '', locationMode: '', locationRootId: '', locationsChecked: 0,
     reasonId: '', error: ''
   }, runtimeCatalog: {},
-  jobs: [], selectedJobs: new Set(), selectedJobId: '', catalogs: {}, catalogErrors: {}, catalogLoading: {},
+  jobs: [], selectedJobs: new Set(), selectedJobId: '', queueError: '', queueConcurrency: 2,
+  catalogs: {}, catalogErrors: {}, catalogLoading: {}, catalogMeta: {}, catalogQueries: {}, catalogRequestEpoch: {},
   inputs: {}, outputs: {}, probe: null, probeError: '', probeExportError: '', probeExportFormat: '', audioStreams: [],
   filters: normalizeFilters(store.get('filters', [{ kind: 'video', name: 'scale', options: { width: 1920, height: -2, flags: 'lanczos' } }])), selectedFilter: 0,
   presets: store.get('presets', []), converterFiles: [], tabs: normalizeTabs(store.get('tabs', DEFAULT_TABS)),
@@ -198,7 +199,7 @@ const saveUi = () => {
 const GROUPS = {
   overview: { title: 'Home', items: [['overview', 'dashboard', 'Overview'], ['jobs', 'receipt_long', 'Jobs & logs'], ['settings', 'settings', 'Settings']] },
   media: { title: 'Media', items: [['convert', 'sync_alt', 'Convert'], ['trim', 'content_cut', 'Trim & clip'], ['filters', 'account_tree', 'Filtergraph'], ['audio', 'graphic_eq', 'Audio'], ['gif', 'gif_box', 'GIF & thumbs'], ['presets', 'bookmarks', 'Presets'], ['inspector', 'search_insights', 'Inspector']] },
-  registry: { title: 'Registry', items: [['codecs', 'memory', 'Codecs'], ['formats', 'folder_zip', 'Formats'], ['protocols', 'lan', 'Protocols'], ['bsf', 'swap_horiz', 'Bitstream filters'], ['devices', 'videocam', 'Devices'], ['matrix', 'grid_on', 'Capability matrix']] },
+  registry: { title: 'Registry', items: [['codecs', 'memory', 'Codecs'], ['encoders', 'output', 'Encoders'], ['decoders', 'movie', 'Decoders'], ['formats', 'folder_zip', 'Formats'], ['filtersCatalog', 'account_tree', 'Filters'], ['protocols', 'lan', 'Protocols'], ['bsf', 'swap_horiz', 'Bitstream filters'], ['devices', 'videocam', 'Devices'], ['pixelFormats', 'grid_on', 'Pixel formats'], ['sampleFormats', 'graphic_eq', 'Sample formats'], ['channelLayouts', 'podcasts', 'Channel layouts'], ['matrix', 'grid_on', 'Capability matrix']] },
   system: { title: 'System', items: [['hwaccel', 'developer_board', 'Hardware accel'], ['streaming', 'podcasts', 'Streaming'], ['composer', 'terminal', 'Composer'], ['converter', 'published_with_changes', 'File converter']] }
 };
 
@@ -223,7 +224,13 @@ const funnyPreview = (language, rawLevel) => {
   return language === 'cantonese' ? cantoneseFact + cantoneseVoice[level - 1] : englishFact + englishVoice[level - 1];
 };
 const RAIL = [['overview', 'dashboard', 'Home'], ['media', 'movie', 'Media'], ['registry', 'database', 'Registry'], ['system', 'developer_board', 'System']];
-const CATALOG_KINDS = { codecs: 'codecs', formats: 'formats', protocols: 'protocols', bsf: 'bsfs', devices: 'devices' };
+const CATALOG_KINDS = Object.freeze({
+  codecs: 'codecs', encoders: 'encoders', decoders: 'decoders', formats: 'formats', filtersCatalog: 'filters',
+  protocols: 'protocols', bsf: 'bsfs', devices: 'devices', pixelFormats: 'pixelFormats', sampleFormats: 'sampleFormats',
+  channelLayouts: 'channelLayouts', hwaccel: 'hwaccels'
+});
+const CATALOG_KIND_SET = new Set(Object.values(CATALOG_KINDS));
+const CATALOG_RESULT_LIMIT = 500;
 const groupFor = (view) => Object.keys(GROUPS).find((key) => GROUPS[key].items.some((item) => item[0] === view)) || 'overview';
 
 const apiCall = async (path, ...args) => {
@@ -649,6 +656,15 @@ const normalizeJob = (job, index) => {
     rawProgress.progress ? bounded(rawProgress.progress, 30) : ''
   ].filter(Boolean).join(' · ');
   const outputError = job.outputValidation && job.outputValidation.valid === false ? job.outputValidation.error : '';
+  const outputValidation = job.outputValidation && typeof job.outputValidation === 'object' ? {
+    valid: job.outputValidation.valid === true,
+    mode: bounded(job.outputValidation.mode || '', 30),
+    error: bounded(job.outputValidation.error || '', 1000),
+    outputs: Array.isArray(job.outputValidation.outputs) ? job.outputValidation.outputs.slice(0, 2000).map((output) => ({
+      name: bounded(output?.name || 'output', 255),
+      bytes: Number.isSafeInteger(output?.bytes) && output.bytes >= 0 ? output.bytes : 0
+    })) : []
+  } : null;
   return {
     id: String(job.id ?? job.jobId ?? index),
     label: bounded(job.label ?? job.name ?? `Job ${index + 1}`, 200),
@@ -660,24 +676,42 @@ const normalizeJob = (job, index) => {
     exitCode: Number.isInteger(job.exitCode) ? job.exitCode : null,
     argv: Array.isArray(job.argv || job.args) ? (job.argv || job.args).map((arg) => bounded(typeof arg === 'string' ? arg : arg?.name || '[selected file]', 4096)).slice(0, 512) : [],
     logs: Array.isArray(job.logs) ? job.logs.slice(-1000).map((line) => bounded(line, 4000)) : [],
-    error: bounded(job.error || outputError || '', 1000)
+    error: bounded(job.error || outputError || '', 1000),
+    createdAt: bounded(job.createdAt || '', 40),
+    updatedAt: bounded(job.updatedAt || '', 40),
+    startedAt: bounded(job.startedAt || '', 40),
+    finishedAt: bounded(job.finishedAt || '', 40),
+    cancelRequested: job.cancelRequested === true,
+    outputValidation
   };
 };
+
+function reconcileJobs(jobs) {
+  state.jobs = jobs.slice(0, 1000);
+  const retained = new Set(state.jobs.map((job) => job.id));
+  state.selectedJobs = new Set([...state.selectedJobs].filter((id) => retained.has(id)));
+  if (state.selectedJobId && !retained.has(state.selectedJobId)) state.selectedJobId = '';
+  if (!state.selectedJobId && state.jobs.length) state.selectedJobId = state.jobs[0].id;
+}
 
 async function refreshJobs() {
   try {
     const result = await apiCall('jobs.list');
-    state.jobs = (Array.isArray(result) ? result : result?.jobs || []).slice(0, 1000).map(normalizeJob);
+    reconcileJobs((Array.isArray(result) ? result : result?.jobs || []).slice(0, 1000).map(normalizeJob));
+    state.queueError = '';
     render();
     await reconcileLoudnormJobs();
-  } catch (error) { state.runtime.error = error.message; render(); }
+  } catch (error) {
+    state.queueError = bounded(error.message, 1000);
+    render();
+  }
 }
 
 const jobRows = (selectable = false) => state.jobs.length ? state.jobs.map((job) => `<div class="list-item job-row" data-job-id="${esc(job.id)}">
   ${selectable ? `<input class="job-select" type="checkbox" data-job-id="${esc(job.id)}"${state.selectedJobs.has(job.id) ? ' checked' : ''}>` : ''}
   <span class="ms">${job.status === 'completed' ? 'check_circle' : job.status === 'failed' ? 'error' : 'movie'}</span>
   <span style="flex:1;min-width:0"><b>${esc(displayText(job.label, 'job'))}</b><br><small class="mono">${esc(job.argv.length ? commandPreview(job.argv) : displayText(job.progressText || job.kind, 'job detail'))}</small>${job.error ? `<br><small style="color:var(--danger)">${esc(displayText(job.error, 'job error'))}</small>` : ''}</span>
-  <span class="tag${['completed', 'cancelled', 'failed'].includes(job.status) ? ' idle' : ''}">${esc(job.status.toUpperCase())}</span>
+  <span class="tag${['completed', 'cancelled', 'failed', 'interrupted'].includes(job.status) ? ' idle' : ''}">${esc(job.status.toUpperCase())}</span>
   <b class="mono" style="font-size:11px;color:var(--muted)">${esc(job.speed || (job.exitCode != null ? `exit ${job.exitCode}` : ''))}</b>
   <button class="job-focus" data-job-id="${esc(job.id)}" title="Open job log"><span class="ms">receipt_long</span></button>
   <div class="progress-track" style="grid-column:1/-1" role="progressbar"${job.progress === null ? ` aria-valuetext="${esc(job.progressText || job.status)}"` : ` aria-valuemin="0" aria-valuemax="100" aria-valuenow="${job.progress}"`}><span style="width:${job.progress === null ? 0 : job.progress}%"></span></div></div>`).join('') : '<div class="empty-state"><b>No jobs yet</b><br><small>Choose a real input and output, then queue an operation.</small></div>';
@@ -732,6 +766,20 @@ const runtimeCard = () => {
   return `<div class="card span3 runtime-card"><small>Runtime</small><div class="stat runtime-stat">${esc(value)}</div><small>${esc(displayText(runtime.error || 'Bundled FFmpeg status', 'runtime detail'))}</small>
     <details class="runtime-meta"><summary>Runtime details</summary>${rows.map(([label, fact]) => `<div class="runtime-meta-row"><span class="runtime-meta-label">${esc(label)}</span><span class="runtime-meta-value">${esc(fact)}</span></div>`).join('')}
     ${fullFacts.map(([label, fact]) => `<div class="runtime-meta-row"><span class="runtime-meta-label">${esc(label)}</span><code class="runtime-meta-value${label === 'Configuration' ? ' runtime-configuration' : ''}">${esc(fact)}</code></div>`).join('')}</details></div>`;
+};
+
+const jobTime = (value) => {
+  if (!value) return 'Not reported';
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString() : 'Invalid timestamp';
+};
+const byteSize = (value) => {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return 'Unknown size';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
 };
 
 const VIEWS = {
@@ -833,8 +881,21 @@ const VIEWS = {
   jobs: () => {
     const selected = state.jobs.find((job) => job.id === state.selectedJobId) || state.jobs[0];
     const logs = selected?.logs || [];
-    return `${pageHead('Durable queue', 'Jobs & logs', 'Live process state, progress facts, exit status, output validation, and bounded logs.', '<button class="outlined" id="refresh-jobs">Refresh</button><button class="outlined" id="clear-finished">Clear finished</button>')}<div class="card bulk-bar"><b>${state.selectedJobs.size} selected</b><button id="jobs-select-all">Select all</button><button id="jobs-select-none">Clear</button><button id="jobs-pause">Pause</button><button id="jobs-resume">Resume</button><button id="jobs-back">Move to back</button><button id="jobs-cancel" style="color:var(--danger)">Cancel</button></div>
-      <div class="list">${jobRows(true)}</div><div class="card" style="margin-top:14px"><div class="section-head"><h2>${selected ? esc(displayText(selected.label, 'job')) : 'Job log'}</h2><input id="log-search" placeholder="Filter log lines"></div>${selected?.error ? `<p class="notice" style="color:var(--danger)"><b>Failure:</b> ${esc(displayText(selected.error, 'job error'))}</p>` : ''}<div class="log-pane" id="log-pane">${logs.length ? logs.map((line) => `<div>${esc(displayText(line, 'job file'))}</div>`).join('') : '<div>No log lines available.</div>'}</div></div>`;
+    const selectedJobs = state.jobs.filter((job) => state.selectedJobs.has(job.id));
+    const canPause = selectedJobs.some((job) => job.status === 'running');
+    const canResume = selectedJobs.some((job) => job.status === 'paused');
+    const canCancel = selectedJobs.some((job) => !['completed', 'failed', 'cancelled', 'interrupted'].includes(job.status));
+    const canReorder = selectedJobs.some((job) => job.status === 'queued');
+    const validation = selected?.outputValidation;
+    const outputs = validation?.outputs || [];
+    return `${pageHead('Durable queue', 'Jobs & logs', 'Live process state, progress facts, exit status, output validation, and bounded logs.', '<button class="outlined" id="refresh-jobs">Refresh</button><button class="outlined" id="clear-finished">Clear finished</button>')}
+      ${state.queueError ? `<p class="notice queue-error" role="alert"><b>Queue update unavailable:</b> ${esc(displayText(state.queueError, 'queue error'))}</p>` : ''}
+      <div class="card bulk-bar"><b>${state.selectedJobs.size} selected</b><span class="tag idle">${state.queueConcurrency} parallel</span><button id="jobs-select-all">Select all</button><button id="jobs-select-none">Clear</button><button id="jobs-pause"${canPause ? '' : ' disabled'}>Pause running</button><button id="jobs-resume"${canResume ? '' : ' disabled'}>Resume paused</button><button id="jobs-back"${canReorder ? '' : ' disabled'}>Move queued to back</button><button id="jobs-cancel" style="color:var(--danger)"${canCancel ? '' : ' disabled'}>Cancel active</button></div>
+      <div class="list">${jobRows(true)}</div><div class="card job-detail" style="margin-top:14px"><div class="section-head"><h2>${selected ? esc(displayText(selected.label, 'job')) : 'Job log'}</h2><div class="head-actions"><input id="log-search" placeholder="Filter log lines"><button class="builder-button" type="button" title="Open regex builder">.*</button></div></div>
+      ${selected ? `<div class="job-facts"><span><b>Status</b>${esc(selected.status)}</span><span><b>Created</b>${esc(jobTime(selected.createdAt))}</span><span><b>Started</b>${esc(jobTime(selected.startedAt))}</span><span><b>Finished</b>${esc(jobTime(selected.finishedAt))}</span><span><b>Exit</b>${selected.exitCode == null ? 'Not reported' : esc(String(selected.exitCode))}</span><span><b>Progress</b>${esc(selected.progressText || (selected.progress == null ? 'No percentage reported' : `${selected.progress}%`))}</span></div>` : ''}
+      ${selected?.error ? `<p class="notice queue-error"><b>Failure:</b> ${esc(displayText(selected.error, 'job error'))}</p>` : ''}
+      ${validation ? `<div class="notice ${validation.valid ? 'queue-validation-ok' : 'queue-error'}"><b>Output validation: ${validation.valid ? 'passed' : 'failed'}</b>${validation.error ? `<br>${esc(displayText(validation.error, 'output validation error'))}` : ''}${outputs.length ? `<ul>${outputs.map((output) => `<li>${esc(displayText(output.name, 'output file'))} · ${esc(byteSize(output.bytes))}</li>`).join('')}</ul>` : '<br>No file outputs were declared for this stream job.'}</div>` : ''}
+      <div class="log-pane" id="log-pane">${logs.length ? logs.map((line) => `<div>${esc(displayText(line, 'job file'))}</div>`).join('') : '<div>No log lines available.</div>'}</div></div>`;
   },
 
   composer: () => {
@@ -853,9 +914,17 @@ const VIEWS = {
 };
 
 const catalogView = (view) => {
-  const kind = CATALOG_KINDS[view], rows = state.catalogs[kind] || [], error = state.catalogErrors[kind], loading = state.catalogLoading[kind];
-  const label = GROUPS.registry.items.find((item) => item[0] === view)?.[2] || view;
-  return `${pageHead('Bundled runtime inventory', label, 'Entries come directly from the bundled FFmpeg executable.', '<input id="catalog-search" placeholder="Search this inventory"><button class="tonal" id="catalog-refresh">Refresh</button>')}<div id="catalog-results" class="registry-grid">${loading ? '<div class="empty-state">Loading runtime inventory…</div>' : error ? `<div class="empty-state"><b>Inventory unavailable</b><br><small>${esc(displayText(error, 'inventory error'))}</small></div>` : rows.length ? rows.slice(0,2000).map((entry,index) => { const item = typeof entry === 'string' ? { name: entry } : entry; return `<button class="registry-row" data-catalog-index="${index}"><b>${esc(item.name || item.id || item.key || '')}</b><span class="desc">${esc(displayText(item.description || item.details || item.flags || '', 'inventory detail'))}</span><span class="tag">${esc(item.type || kind)}</span><span class="ms">tune</span></button>`; }).join('') : '<div class="empty-state"><b>No entries reported</b><br><small>The app does not substitute a fabricated registry.</small></div>'}</div><p class="hint">${rows.length} entries loaded. Search filters this bounded local view.</p>`;
+  const kind = CATALOG_KINDS[view], rows = state.catalogs[kind] || [], error = state.catalogErrors[kind], loading = state.catalogLoading[kind], meta = state.catalogMeta[kind] || {};
+  const label = [...GROUPS.registry.items, ...GROUPS.system.items].find((item) => item[0] === view)?.[2] || view;
+  const query = state.catalogQueries[kind] || '';
+  const needle = query.toLocaleLowerCase();
+  const matchesQuery = (entry) => {
+    const item = typeof entry === 'string' ? { name: entry } : entry;
+    return !needle || `${item?.name || item?.id || item?.key || ''} ${item?.description || item?.details || item?.flags || ''}`.toLocaleLowerCase().includes(needle);
+  };
+  const visibleCount = rows.filter(matchesQuery).length;
+  const countCopy = `${query ? `${visibleCount} shown · ` : ''}${rows.length} loaded${meta.truncated ? ` · limited to ${meta.limit || CATALOG_RESULT_LIMIT}` : ''}${Number.isFinite(meta.total) && meta.total > rows.length ? ` · at least ${meta.total} reported` : ''}`;
+  return `${pageHead('Bundled runtime inventory', label, 'Entries come directly from the bundled FFmpeg executable through a bounded trusted request.', `<input id="catalog-search" value="${esc(query)}" placeholder="Search this inventory"><button class="builder-button" type="button" title="Open regex builder">.*</button><button class="tonal" id="catalog-panel">Open help panel</button><button class="tonal" id="catalog-refresh">Refresh</button>`)}<div id="catalog-results" class="registry-grid">${loading ? '<div class="empty-state">Loading runtime inventory…</div>' : error ? `<div class="empty-state"><b>Inventory unavailable</b><br><small>${esc(displayText(error, 'inventory error'))}</small></div>` : rows.length ? rows.map((entry,index) => { const item = typeof entry === 'string' ? { name: entry } : entry; const helpTarget = catalogHelpTarget(kind, item); return `<button class="registry-row" data-catalog-index="${index}" title="${helpTarget ? 'Read bundled FFmpeg help' : 'Component help is not available for this inventory kind'}"${matchesQuery(entry) ? '' : ' hidden'}><b>${esc(item.name || item.id || item.key || '')}</b><span class="desc">${esc(displayText(item.description || item.details || item.flags || '', 'inventory detail'))}</span><span class="tag">${esc(item.mediaType || item.type || kind)}</span><span class="ms">${helpTarget ? 'tune' : 'info'}</span></button>`; }).join('') : '<div class="empty-state"><b>No entries reported</b><br><small>The app does not substitute a fabricated registry.</small></div>'}</div><p class="hint" id="catalog-count">${esc(countCopy)}. Search filters only this local bounded result.</p>`;
 };
 Object.keys(CATALOG_KINDS).forEach((view) => { VIEWS[view] = () => catalogView(view); });
 VIEWS.matrix = () => `${pageHead('Capability inputs', 'Capability matrix', 'Browse the real codec and container inventories together; compatibility is never guessed.', '<input id="matrix-search" placeholder="Filter both inventories">')}<div class="grid"><div class="card span6"><h2>Codecs reported by build</h2><div id="matrix-codecs" class="list">${(state.catalogs.codecs||[]).slice(0,250).map((entry)=>`<div class="list-item matrix-entry"><b>${esc(typeof entry==='string'?entry:entry.name||entry.id||'')}</b><small>${esc(typeof entry==='object'?entry.description||entry.flags||'':'')}</small></div>`).join('')||'<div class="empty-state">Loading codecs…</div>'}</div></div><div class="card span6"><h2>Formats reported by build</h2><div id="matrix-formats" class="list">${(state.catalogs.formats||[]).slice(0,250).map((entry)=>`<div class="list-item matrix-entry"><b>${esc(typeof entry==='string'?entry:entry.name||entry.id||'')}</b><small>${esc(typeof entry==='object'?entry.description||entry.flags||'':'')}</small></div>`).join('')||'<div class="empty-state">Loading formats…</div>'}</div></div></div>`;
@@ -1233,8 +1302,10 @@ function wireView() {
   $('#inspect-run')?.addEventListener('click', () => inspectSelected('inspector')); $$('.probe-export').forEach((button) => button.onclick = () => exportProbe(button.dataset.format));
   $('#refresh-runtime')?.addEventListener('click', refreshRuntime); $('#refresh-jobs')?.addEventListener('click', refreshJobs);
   $('#catalog-refresh')?.addEventListener('click', () => loadCatalog(CATALOG_KINDS[state.view],true)); $('#catalog-search')?.addEventListener('input', filterCatalog);
+  $('#catalog-panel')?.addEventListener('click', () => window.optionGuides?.openCatalog?.({ kind: CATALOG_KINDS[state.view], emitSelection: false, closeOnSelect: false }));
   $('#matrix-search')?.addEventListener('input',(event)=>{$$('.matrix-entry').forEach((row)=>{row.hidden=!row.textContent.toLowerCase().includes(event.target.value.toLowerCase());});});
   $$('[data-catalog-index]').forEach((button) => button.onclick = () => openCatalogHelp(CATALOG_KINDS[state.view],Number(button.dataset.catalogIndex)));
+  $$('.builder-button', $('#content')).forEach((button) => button.onclick = (event) => { event.preventDefault(); openRegex(); });
 
   $$('.job-select').forEach((check) => check.onchange = () => { check.checked ? state.selectedJobs.add(check.dataset.jobId) : state.selectedJobs.delete(check.dataset.jobId); render(); });
   $$('.job-focus').forEach((button) => button.onclick = () => { state.selectedJobId = button.dataset.jobId; render(); });
@@ -1313,40 +1384,126 @@ async function exportProbe(format) {
   finally { state.probeExportFormat = ''; render(); }
 }
 async function loadCatalog(kind, force = false) {
-  if (!kind || (state.catalogLoading[kind] && !force)) return;
-  state.catalogLoading[kind] = true; delete state.catalogErrors[kind]; render();
-  try { const result = await apiCall('catalog.list', kind); state.catalogs[kind] = (Array.isArray(result) ? result : result?.entries || result?.items || []).slice(0,10000); }
-  catch (error) { state.catalogErrors[kind] = error.message; state.catalogs[kind] = []; }
-  state.catalogLoading[kind] = false; render();
+  if (!CATALOG_KIND_SET.has(kind) || (state.catalogLoading[kind] && !force)) return;
+  const available = Array.isArray(state.runtimeCatalog.kinds) ? new Set(state.runtimeCatalog.kinds) : null;
+  if (available && !available.has(kind)) {
+    state.catalogErrors[kind] = `The bundled runtime does not declare the ${kind} inventory.`;
+    state.catalogs[kind] = [];
+    state.catalogLoading[kind] = false;
+    render();
+    return;
+  }
+  const request = (state.catalogRequestEpoch[kind] || 0) + 1;
+  state.catalogRequestEpoch[kind] = request;
+  state.catalogLoading[kind] = true;
+  delete state.catalogErrors[kind];
+  render();
+  try {
+    const result = await apiCall('catalog.list', kind, { limit: CATALOG_RESULT_LIMIT, refresh: force });
+    if (state.catalogRequestEpoch[kind] !== request) return;
+    const source = Array.isArray(result) ? result : result?.entries || result?.items || [];
+    state.catalogs[kind] = source.slice(0, CATALOG_RESULT_LIMIT);
+    state.catalogMeta[kind] = {
+      total: Number.isFinite(result?.total) ? result.total : source.length,
+      limit: Number.isInteger(result?.limit) ? result.limit : CATALOG_RESULT_LIMIT,
+      truncated: result?.truncated === true || source.length > CATALOG_RESULT_LIMIT
+    };
+    state.runtimeCatalog.counts = Object.assign({}, state.runtimeCatalog.counts, {
+      [kind]: state.catalogMeta[kind].truncated ? `${state.catalogs[kind].length}+` : state.catalogs[kind].length
+    });
+  } catch (error) {
+    if (state.catalogRequestEpoch[kind] !== request) return;
+    state.catalogErrors[kind] = bounded(error.message, 1000);
+    state.catalogs[kind] = [];
+    state.catalogMeta[kind] = { total: 0, limit: CATALOG_RESULT_LIMIT, truncated: false };
+  } finally {
+    if (state.catalogRequestEpoch[kind] === request) {
+      state.catalogLoading[kind] = false;
+      render();
+    }
+  }
 }
 function filterCatalog() {
-  const query = bounded($('#catalog-search').value,500).toLowerCase(); $$('.registry-row','#catalog-results').forEach((row) => { row.hidden = !row.textContent.toLowerCase().includes(query); });
+  const kind = CATALOG_KINDS[state.view];
+  const input = $('#catalog-search');
+  if (!kind || !input) return;
+  const query = bounded(input.value, 500);
+  state.catalogQueries[kind] = query;
+  let shown = 0;
+  $$('.registry-row','#catalog-results').forEach((row) => {
+    row.hidden = !row.textContent.toLocaleLowerCase().includes(query.toLocaleLowerCase());
+    if (!row.hidden) shown += 1;
+  });
+  const count = $('#catalog-count');
+  if (count) count.textContent = `${shown} shown · ${(state.catalogs[kind] || []).length} loaded${state.catalogMeta[kind]?.truncated ? ` · bounded to ${state.catalogMeta[kind].limit || CATALOG_RESULT_LIMIT}` : ''}. Search filters only this local result.`;
+}
+function catalogHelpTarget(kind, entry) {
+  const item = entry && typeof entry === 'object' ? entry : {};
+  const direct = { encoders: 'encoder', decoders: 'decoder', filters: 'filter', protocols: 'protocol', bsfs: 'bsf' }[kind];
+  if (direct) return { kind: direct, name: item.name };
+  if (kind === 'codecs') {
+    if (Array.isArray(item.encoders) && item.encoders[0]) return { kind: 'encoder', name: item.encoders[0] };
+    if (Array.isArray(item.decoders) && item.decoders[0]) return { kind: 'decoder', name: item.decoders[0] };
+    if (item.canEncode) return { kind: 'encoder', name: item.name };
+    if (item.canDecode) return { kind: 'decoder', name: item.name };
+  }
+  if (kind === 'formats' || kind === 'devices') {
+    if (item.muxing || String(item.flags || '').includes('E')) return { kind: 'muxer', name: item.name };
+    if (item.demuxing || String(item.flags || '').includes('D')) return { kind: 'demuxer', name: item.name };
+  }
+  return null;
 }
 async function openCatalogHelp(kind,index) {
   const entry = state.catalogs[kind]?.[index], name = typeof entry === 'string' ? entry : entry?.name || entry?.id || entry?.key; if (!name) return;
-  const helpKind = kind === 'codecs' ? ((entry?.flags || '').includes('E') ? 'encoder' : 'decoder') : kind === 'formats' ? ((entry?.flags || '').includes('E') ? 'muxer' : 'demuxer') : kind === 'protocols' ? 'protocol' : kind === 'bsfs' ? 'bsf' : null;
-  if (!helpKind) return notify('Help unavailable',`This FFmpeg inventory does not expose component help for ${kind}.`);
+  const target = catalogHelpTarget(kind, typeof entry === 'string' ? { name: entry } : entry);
+  if (!target?.kind || !target.name) return notify('Help unavailable',`This FFmpeg inventory does not expose component help for ${kind}.`);
   try {
-    const result = await apiCall('catalog.help', helpKind, name);
-    if (window.optionGuides?.openRuntimeHelp) return window.optionGuides.openRuntimeHelp({ kind:helpKind, name, help: result });
-    if (window.optionGuides?.openCatalog) return window.optionGuides.openCatalog({ kind:helpKind, initialItem: name });
-    notify(name,bounded(typeof result === 'string' ? result : JSON.stringify(result),500));
+    const result = await apiCall('catalog.help', target.kind, target.name, { maxChars: 64 * 1024 });
+    if (window.optionGuides?.openRuntimeHelp) return window.optionGuides.openRuntimeHelp({ kind:target.kind, name:target.name, help: result });
+    if (window.optionGuides?.openCatalog) return window.optionGuides.openCatalog({ kind, helpKind:target.kind, initialItem:target.name, initialHelp:result, emitSelection:false, closeOnSelect:false });
+    notify(target.name,bounded(typeof result === 'string' ? result : result?.text || JSON.stringify(result),500));
   } catch (error) { notify('Help unavailable',error.message,'error'); }
 }
 async function runJobAction(action) {
-  const ids = Array.from(state.selectedJobs); if (!ids.length) return notify('No jobs selected','Select at least one job.','error');
-  const results = await Promise.allSettled(ids.map((id) => apiCall(`jobs.${action}`,id))), failed = results.filter((result) => result.status === 'rejected').length;
-  if (failed) notify(`${action} incomplete`,`${failed} of ${ids.length} requests failed.`,'error'); state.selectedJobs.clear(); await refreshJobs();
+  const selected = state.jobs.filter((job) => state.selectedJobs.has(job.id));
+  if (!selected.length) return notify('No jobs selected','Select at least one job.','error');
+  const eligibleStatus = { pause: new Set(['running']), resume: new Set(['paused']), cancel: new Set(['queued', 'running', 'paused', 'cancelling', 'stopping']) }[action];
+  if (!eligibleStatus) return notify('Job action unavailable',`The ${action} action is not supported.`,'error');
+  const eligible = selected.filter((job) => eligibleStatus.has(job.status));
+  const skipped = selected.filter((job) => !eligibleStatus.has(job.status));
+  const results = await Promise.all(eligible.map(async (job) => {
+    try { await apiCall(`jobs.${action}`,job.id); return { job, ok:true, error:'' }; }
+    catch (error) { return { job, ok:false, error:bounded(error.message,300) }; }
+  }));
+  const succeeded = results.filter((result) => result.ok);
+  const failed = results.filter((result) => !result.ok);
+  state.selectedJobs = new Set([...skipped.map((job) => job.id), ...failed.map((result) => result.job.id)]);
+  const summary = [`${succeeded.length} succeeded`, `${failed.length} failed`, `${skipped.length} skipped because their current state does not allow ${action}`];
+  if (failed.length) summary.push(`Failures: ${failed.slice(0,5).map((result) => `${result.job.label}: ${result.error}`).join('; ')}`);
+  notify(failed.length || skipped.length ? `${action} incomplete` : `${action} complete`, summary.join(' · '), failed.length ? 'error' : 'info');
+  await refreshJobs();
 }
 async function moveSelectedToBack() {
   const selected = new Set(state.selectedJobs); if (!selected.size) return notify('No jobs selected','Select at least one job.','error');
-  const order = [...state.jobs.filter((job) => !selected.has(job.id)), ...state.jobs.filter((job) => selected.has(job.id))].map((job) => job.id);
-  try { await apiCall('jobs.reorder',order); state.selectedJobs.clear(); await refreshJobs(); } catch (error) { notify('Reorder failed',error.message,'error'); }
+  const selectedQueued = state.jobs.filter((job) => selected.has(job.id) && job.status === 'queued');
+  const skipped = state.jobs.filter((job) => selected.has(job.id) && job.status !== 'queued');
+  if (!selectedQueued.length) return notify('Nothing moved',`${skipped.length} selected job${skipped.length === 1 ? '' : 's'} cannot move because only queued jobs are reorderable.`,'error');
+  const queuedSlots = state.jobs.map((job,index) => job.status === 'queued' ? index : -1).filter((index) => index >= 0);
+  const queued = state.jobs.filter((job) => job.status === 'queued');
+  const reorderedQueued = [...queued.filter((job) => !selected.has(job.id)), ...queued.filter((job) => selected.has(job.id))];
+  const order = state.jobs.map((job) => job.id);
+  queuedSlots.forEach((slot,index) => { order[slot] = reorderedQueued[index].id; });
+  try {
+    await apiCall('jobs.reorder',order);
+    state.selectedJobs = new Set(skipped.map((job) => job.id));
+    notify(skipped.length ? 'Reorder partially complete' : 'Queued jobs moved',`${selectedQueued.length} queued job${selectedQueued.length === 1 ? '' : 's'} moved to the back${skipped.length ? `; ${skipped.length} non-queued selection${skipped.length === 1 ? ' was' : 's were'} left in place` : ''}.`);
+    await refreshJobs();
+  } catch (error) { notify('Reorder failed',error.message,'error'); }
 }
 async function clearFinished() {
   const ids = state.jobs.filter((job) => ['completed','failed','cancelled','interrupted'].includes(job.status)).map((job) => job.id);
   if (!ids.length) return notify('Nothing to clear','No finished jobs are present.');
-  openConfirm('Clear finished jobs?',`${ids.length} finished job records will be removed.`,async () => { try { await apiCall('jobs.clear',ids); await refreshJobs(); } catch (error) { notify('Clear failed',error.message,'error'); } });
+  openConfirm('Clear finished jobs?',`${ids.length} finished job records will be removed.`,async () => { try { await apiCall('jobs.clear',ids); notify('Finished jobs cleared',`${ids.length} finished job record${ids.length === 1 ? '' : 's'} removed.`); await refreshJobs(); } catch (error) { notify('Clear failed',error.message,'error'); } });
 }
 function filterLogs() {
   const selected = state.jobs.find((job) => job.id === state.selectedJobId) || state.jobs[0], query = $('#log-search').value.toLowerCase();
@@ -1470,18 +1627,36 @@ function openRegex() {
 
 function filterJobEvent(payload) {
   if (!payload) return;
-  if (Array.isArray(payload.jobs)) { state.jobs=payload.jobs.slice(0,1000).map(normalizeJob); void reconcileLoudnormJobs(); }
-  else if (payload.job && typeof payload.job === 'object') { const normalized=normalizeJob(payload.job,0), index=state.jobs.findIndex((job)=>job.id===normalized.id); if(index>=0)state.jobs[index]=normalized; else state.jobs.unshift(normalized); void reconcileLoudnormJob(normalized); }
+  if (payload.type === 'state-error') {
+    state.queueError = bounded(payload.error || 'The saved queue state could not be loaded.', 1000);
+    notify('Queue state unavailable', state.queueError, 'error');
+    render();
+    return;
+  }
+  if (payload.type === 'concurrency-changed') {
+    state.queueConcurrency = clamp(payload.concurrency, 1, 4);
+    if (state.view === 'jobs' || state.view === 'overview') render();
+    return;
+  }
+  if (Array.isArray(payload.jobs)) {
+    reconcileJobs(payload.jobs.slice(0,1000).map(normalizeJob));
+    void reconcileLoudnormJobs();
+  }
   else if (payload.type === 'cleared' && Array.isArray(payload.ids)) {
     const cleared=new Set(payload.ids.map(String));
-    state.jobs=state.jobs.filter((job)=>!cleared.has(job.id));
-    state.selectedJobs=new Set([...state.selectedJobs].filter((id)=>!cleared.has(id)));
-    if(cleared.has(state.selectedJobId))state.selectedJobId='';
+    reconcileJobs(state.jobs.filter((job)=>!cleared.has(job.id)));
     const abandoned=[...cleared].filter((id)=>state.loudnormPending[id]);
     abandoned.forEach((id)=>delete state.loudnormPending[id]);
     if(abandoned.length){saveLoudnormPending();notify('Two-pass normalization stopped',`${abandoned.length} saved pass 1 job${abandoned.length===1?' was':'s were'} cleared before pass 2 could start.`,'error');}
   }
+  else if (payload.job && typeof payload.job === 'object') {
+    const normalized=normalizeJob(payload.job,0), jobs=[...state.jobs], index=jobs.findIndex((job)=>job.id===normalized.id);
+    if(index>=0) jobs[index]=normalized; else jobs.push(normalized);
+    reconcileJobs(jobs);
+    void reconcileLoudnormJob(normalized);
+  }
   else return;
+  state.queueError = '';
   const raw=payload.job;
   if(state.settings.notifyComplete&&raw&&['completed','failed','cancelled','interrupted'].includes(raw.status)) {
     const failure = raw.error || (Number.isInteger(raw.exitCode) ? `exit ${raw.exitCode}` : 'no additional failure detail was reported');
@@ -1505,10 +1680,10 @@ async function initialize() {
   restoreLoudnormPending();
   render();
   if (state.loudnormRecoveryNotice) notify('Saved loudness workflow state was not fully restored', state.loudnormRecoveryNotice, 'error');
+  try { const unsubscribe=window.api?.jobs?.onEvent?.(filterJobEvent); if(typeof unsubscribe==='function')window.addEventListener('beforeunload',unsubscribe,{once:true}); }
+  catch(error){state.queueError=bounded(error.message,1000);notify('Live job updates unavailable',error.message,'error');}
   try { state.settings.parallel = clamp(await apiCall('jobs.setConcurrency', state.settings.parallel), 1, 4); saveUi(); }
   catch(error){notify('Parallel-job setting unavailable',error.message,'error');}
-  try { const unsubscribe=window.api?.jobs?.onEvent?.(filterJobEvent); if(typeof unsubscribe==='function')window.addEventListener('beforeunload',unsubscribe,{once:true}); }
-  catch(error){notify('Live job updates unavailable',error.message,'error');}
   await Promise.all([refreshRuntime(),refreshJobs()]);
 }
 window.state=state; window.save=saveUi; window.render=render; window.openRegex=openRegex; initialize();

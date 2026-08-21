@@ -24,6 +24,10 @@ const NAME_RE = /^[a-z0-9_.+-]{1,128}$/i;
 const CACHE_MS = 5 * 60 * 1000;
 const MAX_PROBE_EXPORT_BYTES = 32 * 1024 * 1024;
 const MAX_PROBE_SNAPSHOTS = 64;
+const DEFAULT_INVENTORY_LIMIT = 500;
+const MAX_INVENTORY_LIMIT = 2000;
+const DEFAULT_HELP_LIMIT = 64 * 1024;
+const MAX_HELP_LIMIT = 256 * 1024;
 
 class RuntimeService {
   constructor({ executables, fileRegistry }) {
@@ -98,29 +102,45 @@ class RuntimeService {
     return { status, kinds: Object.keys(INVENTORY_ARGS) };
   }
 
-  async list(kind) {
+  async list(kind, options = {}) {
     if (typeof kind !== 'string' || !Object.hasOwn(INVENTORY_ARGS, kind)) throw new TypeError('Unsupported FFmpeg inventory kind.');
+    const request = normalizeCatalogOptions(options);
     this.assertAvailable('ffmpeg');
     const fingerprint = this.refreshCacheFingerprint();
-    const cached = this.cache.get(`list:${kind}`);
-    if (cached && cached.fingerprint === fingerprint && Date.now() - cached.at < CACHE_MS) return cached.value;
+    const key = `list:${kind}:${request.limit}`;
+    const cached = this.cache.get(key);
+    if (!request.refresh && cached && cached.fingerprint === fingerprint && Date.now() - cached.at < CACHE_MS) return cached.value;
     const result = await collectProcess(this.executables.ffmpeg, INVENTORY_ARGS[kind], { maxBytes: 16 * 1024 * 1024, timeoutMs: 30_000 });
-    const value = parseInventory(kind, result.stdout || result.stderr);
-    this.cache.set(`list:${kind}`, { at: Date.now(), fingerprint, value });
+    const parsed = parseInventory(kind, result.stdout || result.stderr, { maxEntries: request.limit + 1 });
+    const value = {
+      kind,
+      entries: parsed.slice(0, request.limit),
+      total: parsed.length,
+      limit: request.limit,
+      truncated: parsed.length > request.limit
+    };
+    this.cache.set(key, { at: Date.now(), fingerprint, value });
     return value;
   }
 
-  async help(kind, name) {
+  async help(kind, name, options = {}) {
     if (typeof kind !== 'string' || !HELP_KINDS.has(kind)) throw new TypeError('Unsupported FFmpeg help kind.');
     if (typeof name !== 'string' || !NAME_RE.test(name)) throw new TypeError('Invalid FFmpeg component name.');
+    const request = normalizeHelpOptions(options);
     this.assertAvailable('ffmpeg');
     const fingerprint = this.refreshCacheFingerprint();
-    const key = `help:${kind}:${name}`;
+    const key = `help:${kind}:${name}:${request.maxChars}`;
     const cached = this.cache.get(key);
-    if (cached && cached.fingerprint === fingerprint && Date.now() - cached.at < CACHE_MS) return cached.value;
+    if (!request.refresh && cached && cached.fingerprint === fingerprint && Date.now() - cached.at < CACHE_MS) return cached.value;
     const result = await collectProcess(this.executables.ffmpeg, ['-hide_banner', '-h', `${kind}=${name}`], { maxBytes: 4 * 1024 * 1024, timeoutMs: 20_000 });
     const text = normalizeHelpText(result.stdout || result.stderr);
-    const value = { kind, name, text, truncated: false, status: text ? 'ready' : 'empty' };
+    const value = {
+      kind,
+      name,
+      text: text.slice(0, request.maxChars),
+      truncated: text.length > request.maxChars,
+      status: text ? 'ready' : 'empty'
+    };
     this.cache.set(key, { at: Date.now(), fingerprint, value });
     return value;
   }
@@ -175,6 +195,26 @@ class RuntimeService {
     }
     return fingerprint;
   }
+}
+
+function normalizeCatalogOptions(value) {
+  if (value === undefined) return { limit: DEFAULT_INVENTORY_LIMIT, refresh: false };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('FFmpeg inventory options must be an object.');
+  const limit = value.limit === undefined ? DEFAULT_INVENTORY_LIMIT : value.limit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_INVENTORY_LIMIT) {
+    throw new TypeError(`FFmpeg inventory limit must be an integer from 1 through ${MAX_INVENTORY_LIMIT}.`);
+  }
+  return { limit, refresh: value.refresh === true };
+}
+
+function normalizeHelpOptions(value) {
+  if (value === undefined) return { maxChars: DEFAULT_HELP_LIMIT, refresh: false };
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new TypeError('FFmpeg help options must be an object.');
+  const maxChars = value.maxChars === undefined ? DEFAULT_HELP_LIMIT : value.maxChars;
+  if (!Number.isInteger(maxChars) || maxChars < 1 || maxChars > MAX_HELP_LIMIT) {
+    throw new TypeError(`FFmpeg help limit must be an integer from 1 through ${MAX_HELP_LIMIT}.`);
+  }
+  return { maxChars, refresh: value.refresh === true };
 }
 
 function normalizeExportFormat(value) {

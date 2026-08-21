@@ -14,7 +14,7 @@ This ledger describes the installed desktop application and distinguishes source
 | Audio processing | Source-wired | Not verified in this pass | Includes loudness and audio workflow controls. |
 | GIF creation | Source-wired | Not verified in this pass | Palette/fps/dither controls are present. |
 | Thumbnails | Source-wired | Not verified in this pass | Builder and destination flow are present. |
-| HLS streaming output | Source-wired | Not verified in this pass | Local file output flow is present. |
+| HLS, RTMP, and SRT streaming | Source-wired | Not verified in this pass | Guided encoding controls, HLS selected-handle derivatives, mode-matched URLs, session-only target handling, and queue submission are present. |
 | Command composer | Source-wired | Not verified in this pass | Dangerous/path-bearing options are blocked. |
 | Batch converter | Source-wired | Not verified in this pass | Eight media adapters are currently mapped. |
 | Inspector and probe export | Source-wired | Not verified in this pass | Retains the bounded FFprobe JSON snapshot and exports JSON or documented row-per-node CSV/XML through a native save destination. |

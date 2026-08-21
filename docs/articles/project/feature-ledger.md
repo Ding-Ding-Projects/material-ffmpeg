@@ -57,7 +57,7 @@ The current interaction evidence belongs to source commit `5358582f13b6af418e58c
 | Audio processing | Source-wired | Unrun | Includes audio extraction and two-pass loudness normalization controls. |
 | GIF creation | Source-wired | Unrun | Palette/fps/dither controls are present. |
 | Thumbnails | Source-wired | Unrun | Builder and destination flow are present. |
-| HLS streaming output | Source-wired | Unrun | Local file output flow is present. |
+| HLS, RTMP, and SRT streaming | Source-wired | Unrun | Guided encoding controls, HLS selected-handle derivatives, mode-matched URLs, session-only target handling, and queue submission are present. |
 | RTMP and SRT transport | Source-wired | Unrun | Transport builders are packaged; no exact-commit interaction receipt was produced. |
 | Command composer | Source-wired | Unrun | Dangerous/path-bearing options are blocked. |
 | Batch converter | Source-wired | Unrun | Eight media adapters are currently mapped. |

@@ -91,15 +91,21 @@ const state = {
     gifStart: '00:00:00.000', gifDuration: '00:00:05.000', gifFps: 15, gifWidth: 640, gifHeight: -2,
     gifScaler: 'lanczos', gifColors: 128, gifStatsMode: 'full', gifDither: 'sierra2_4a', gifBayerScale: 2, gifLoop: 0,
     thumbTime: '00:00:00.000', thumbFormat: 'jpg', thumbWidth: 1280, thumbHeight: -2, thumbScaler: 'lanczos', thumbQuality: 2,
-    streamMode: 'hls', streamTarget: '', hlsTime: 6, hlsList: 6,
+    streamMode: 'hls', streamTarget: '', hlsTime: 6, hlsList: 6, hlsPlaylistType: 'live', hlsSegmentType: 'mpegts',
+    streamVideoBitrate: '4500k', streamAudioBitrate: '128k', streamResolution: 'source', streamFps: 'source', streamGop: 60,
+    streamRealtime: true, streamLowLatency: true,
     composerArgs: '-c:v\nlibx264\n-c:a\naac', converterTarget: 'mp4'
   }, store.get('form', {}))
 };
+// Streaming URLs can contain deployment identifiers even when the UI refuses
+// explicit credentials. Keep this field session-only and discard values saved
+// by older versions before rendering the first view.
+state.form.streamTarget = '';
 
 const saveUi = () => {
   store.set('theme', state.theme); store.set('logo', state.logo); store.set('tabs', state.tabs);
   store.set('presets', state.presets); store.set('filters', state.filters);
-  store.set('settings', state.settings); store.set('form', state.form);
+  store.set('settings', state.settings); store.set('form', Object.assign({}, state.form, { streamTarget: '' }));
 };
 
 const GROUPS = {
@@ -314,26 +320,50 @@ const thumbnailValues = () => {
     quality: format === 'jpg' ? state.form.thumbQuality : undefined
   };
 };
-const streamingValues = () => state.form.streamMode === 'hls'
-  ? {
+const streamingEncodingValues = () => {
+  const resolution = String(state.form.streamResolution || 'source');
+  const match = /^(\d{2,5})x(\d{2,5})$/u.exec(resolution);
+  if (resolution !== 'source' && !match) throw new Error('Choose a supported streaming resolution.');
+  const fps = String(state.form.streamFps || 'source');
+  if (fps !== 'source' && !new Set(['24', '25', '30', '50', '60']).has(fps)) throw new Error('Choose a supported streaming frame rate.');
+  return {
+    videoCodec: 'libx264',
+    audioCodec: 'aac',
+    videoBitrate: state.form.streamVideoBitrate,
+    audioBitrate: state.form.streamAudioBitrate,
+    width: match ? Number(match[1]) : undefined,
+    height: match ? Number(match[2]) : undefined,
+    fps: fps === 'source' ? undefined : fps,
+    gop: state.form.streamGop,
+    preset: 'veryfast'
+  };
+};
+const streamingValues = () => {
+  const encoding = streamingEncodingValues();
+  if (state.form.streamMode === 'hls') {
+    const output = requireExtension(state.outputs.streaming, ['m3u8'], 'HLS playlist');
+    const fmp4 = state.form.hlsSegmentType === 'fmp4';
+    return Object.assign({}, encoding, {
       input: state.inputs.streaming?.handle,
-      output: requireExtension(state.outputs.streaming, ['m3u8'], 'HLS playlist').handle,
+      output: output.handle,
       hlsTime: state.form.hlsTime,
       listSize: state.form.hlsList,
-      segmentFilename: state.outputs.streaming ? derivedOutput(state.outputs.streaming, '.segment-%05d.ts') : undefined,
-      flags: ['independent_segments', 'temp_file'],
-      videoCodec: 'libx264',
-      audioCodec: 'aac'
-    }
-  : {
-      input: state.inputs.streaming?.handle,
-      target: state.form.streamTarget,
-      format: state.form.streamMode === 'rtmp' ? 'flv' : 'mpegts',
-      videoCodec: 'libx264',
-      audioCodec: 'aac',
-      realtime: true,
-      lowLatency: true
-    };
+      playlistType: state.form.hlsPlaylistType,
+      segmentType: state.form.hlsSegmentType,
+      segmentFilename: derivedOutput(output, fmp4 ? '.segment-%05d.m4s' : '.segment-%05d.ts'),
+      initFilename: fmp4 ? derivedOutput(output, '.init.mp4') : undefined,
+      flags: ['independent_segments', 'temp_file']
+    });
+  }
+  return Object.assign({}, encoding, {
+    input: state.inputs.streaming?.handle,
+    target: state.form.streamTarget,
+    mode: state.form.streamMode,
+    format: state.form.streamMode === 'rtmp' ? 'flv' : 'mpegts',
+    realtime: Boolean(state.form.streamRealtime),
+    lowLatency: Boolean(state.form.streamLowLatency)
+  });
+};
 const workflowPreview = (kind, values) => {
   try { return commandPreview(previewArgs(build(kind, typeof values === 'function' ? values() : values))); }
   catch (error) { return bounded(displayText(error.message, 'command detail'), 1000); }
@@ -517,8 +547,9 @@ const VIEWS = {
     return `${pageHead('Runtime inventory', 'Hardware acceleration', 'Only methods reported by this bundled FFmpeg build are shown.', '<button class="tonal" id="refresh-runtime">Refresh</button>')}<div class="card"><div class="list">${methods.length ? methods.slice(0,200).map((item) => `<div class="list-item"><span class="ms">developer_board</span><b>${esc(typeof item === 'string' ? item : item.name)}</b><small>${esc(displayText(typeof item === 'object' ? item.details || item.description || '' : '', 'hardware detail'))}</small></div>`).join('') : `<div class="empty-state"><b>${state.runtime.loading ? 'Loading hardware inventory…' : 'No hardware method reported'}</b><br><small>${esc(displayText(state.runtime.error || 'This is not inferred from the computer name or graphics vendor.', 'runtime detail'))}</small></div>`}</div></div>`;
   },
 
-  streaming: () => `${pageHead('Live output', 'Streaming', 'Configure a real HLS playlist, RTMP URL, or SRT URL; nothing is preconnected.', '<button class="filled" id="queue-stream">Queue stream</button>')}<div class="grid"><div class="card span6"><div class="list">${pickerCard('streaming','Input')}${state.form.streamMode === 'hls' ? pickerCard('streaming','HLS playlist',true) : ''}</div>${field('Mode',select('stream-mode',['hls','rtmp','srt'],state.form.streamMode))}${state.form.streamMode === 'hls' ? '<p class="notice">Segments are written beside the selected playlist through the same trusted output handle.</p>' : field('Validated streaming URL',input('stream-target',state.form.streamTarget,'text','placeholder="rtmp://… or srt://… (credentials are not accepted)"'))}</div>
-    <div class="card span6"><h2>HLS options</h2><div class="two-col">${field('Segment seconds',input('hls-time',state.form.hlsTime,'number','min="1" max="60"'))}${field('Playlist entries',input('hls-list',state.form.hlsList,'number','min="0" max="10000"'))}</div><div class="empty-state">No target is treated as live or connected until the queued FFmpeg process reports it.</div></div></div>`,
+  streaming: () => `${pageHead('Live output', 'Streaming', 'Build a validated HLS, RTMP, or SRT job. A queued job is not a connection verdict.', '<button class="filled" id="queue-stream">Queue stream</button>')}<div class="grid"><div class="card span6"><h2>Source and destination</h2><div class="list">${pickerCard('streaming','Input')}${state.form.streamMode === 'hls' ? pickerCard('streaming','HLS playlist',true) : ''}</div>${field('Mode',select('stream-mode',['hls','rtmp','srt'],state.form.streamMode))}${state.form.streamMode === 'hls' ? '<p class="notice">The playlist, media segments, and fMP4 initialization file are derived from the selected playlist handle and written beside it. The renderer never receives their filesystem paths.</p>' : `${field(state.form.streamMode === 'rtmp' ? 'RTMP or RTMPS URL' : 'SRT URL with port',input('stream-target',state.form.streamTarget,'text',state.form.streamMode === 'rtmp' ? 'placeholder="rtmp://host/application (no credentials or stream keys)" autocomplete="off" spellcheck="false"' : 'placeholder="srt://host:port (no passphrase or secret query)" autocomplete="off" spellcheck="false"'))}<p class="hint">The URL is validated for the selected mode and is not saved across restarts. Do not enter credentials, stream keys, passphrases, tokens, or secret query values.</p>`}</div>
+    <div class="card span6"><h2>Encoding</h2><div class="two-col">${field('Video bitrate',input('stream-video-bitrate',state.form.streamVideoBitrate,'text','placeholder="4500k" inputmode="text"'))}${field('Audio bitrate',input('stream-audio-bitrate',state.form.streamAudioBitrate,'text','placeholder="128k" inputmode="text"'))}${field('Resolution',select('stream-resolution',['source','1920x1080','1280x720','854x480'],state.form.streamResolution))}${field('Frame rate',select('stream-fps',['source','24','25','30','50','60'],String(state.form.streamFps)))}</div>${field('Keyframe interval (frames)',input('stream-gop',state.form.streamGop,'number','min="1" max="1000000" step="1"'))}<p class="hint">The workflow uses H.264 video, AAC audio, and the veryfast encoder preset for broad HLS, RTMP, and MPEG-TS/SRT compatibility.</p></div>
+    ${state.form.streamMode === 'hls' ? `<div class="card span6"><h2>HLS playlist</h2><div class="two-col">${field('Segment seconds',input('hls-time',state.form.hlsTime,'number','min="1" max="60" step="0.1"'))}${field('Playlist entries',input('hls-list',state.form.hlsList,'number','min="0" max="10000" step="1"'))}${field('Playlist type',select('hls-playlist-type',['live','event','vod'],state.form.hlsPlaylistType))}${field('Segment container',select('hls-segment-type',['mpegts','fmp4'],state.form.hlsSegmentType))}</div><p class="hint">Live keeps a rolling list of the selected size. Event and VOD ask FFmpeg for a complete playlist; use 0 entries when every segment must remain listed.</p></div>` : `<div class="card span6"><h2>Transport behavior</h2><label class="check-row"><input id="stream-realtime" type="checkbox"${state.form.streamRealtime ? ' checked' : ''}> Read the selected input at its native pace</label><label class="check-row"><input id="stream-low-latency" type="checkbox"${state.form.streamLowLatency ? ' checked' : ''}> Apply low-latency encoder and muxer options</label><p class="notice">Queue submission only starts FFmpeg. Connection, authentication, reachability, and server acceptance are reported by the resulting job logs and status.</p></div>`}</div>`,
 
   jobs: () => {
     const selected = state.jobs.find((job) => job.id === state.selectedJobId) || state.jobs[0];
@@ -646,7 +677,7 @@ function wireView() {
   $$('#palette-open,#palette-open-2').forEach((button) => button.onclick = openPalette);
   $$('.pick-input').forEach((button) => button.onclick = async () => { const files = await pickFile(button.dataset.slot, { multiple: false, purpose: button.dataset.slot }); if (files.length && ['audio','inspector'].includes(button.dataset.slot)) inspectSelected(button.dataset.slot); });
   $$('.pick-output').forEach((button) => button.onclick = () => chooseOutput(button.dataset.slot, Object.assign({ purpose: button.dataset.slot }, outputOptions(button.dataset.slot))));
-  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-mode','trimMode'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-codec','audioCodec'],['audio-stream','audioStream'],['gif-start','gifStart'],['gif-duration','gifDuration'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-height','gifHeight',true],['gif-scaler','gifScaler'],['gif-colors','gifColors',true],['gif-stats','gifStatsMode'],['gif-dither','gifDither'],['gif-bayer-scale','gifBayerScale',true],['gif-loop','gifLoop',true],['thumb-time','thumbTime'],['thumb-width','thumbWidth',true],['thumb-height','thumbHeight',true],['thumb-scaler','thumbScaler'],['thumb-quality','thumbQuality',true],['stream-target','streamTarget'],['hls-time','hlsTime',true],['hls-list','hlsList',true],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
+  [['convert-codec','codec'],['convert-container','container'],['convert-crf','crf',true],['convert-preset','preset'],['convert-tune','tune'],['convert-fps','fps'],['convert-width','width',true],['convert-height','height',true],['trim-start','trimStart'],['trim-end','trimEnd'],['trim-duration','trimDuration'],['trim-mode','trimMode'],['trim-video-codec','trimVideoCodec'],['trim-audio-codec','trimAudioCodec'],['trim-crf','trimCrf',true],['trim-preset','trimPreset'],['audio-lufs','loudness',true],['audio-lra','lra',true],['audio-tp','truePeak',true],['loudnorm-codec','loudnormCodec'],['audio-codec','audioCodec'],['audio-stream','audioStream'],['gif-start','gifStart'],['gif-duration','gifDuration'],['gif-fps','gifFps',true],['gif-width','gifWidth',true],['gif-height','gifHeight',true],['gif-scaler','gifScaler'],['gif-colors','gifColors',true],['gif-stats','gifStatsMode'],['gif-dither','gifDither'],['gif-bayer-scale','gifBayerScale',true],['gif-loop','gifLoop',true],['thumb-time','thumbTime'],['thumb-width','thumbWidth',true],['thumb-height','thumbHeight',true],['thumb-scaler','thumbScaler'],['thumb-quality','thumbQuality',true],['stream-target','streamTarget'],['stream-video-bitrate','streamVideoBitrate'],['stream-audio-bitrate','streamAudioBitrate'],['stream-resolution','streamResolution'],['stream-fps','streamFps'],['stream-gop','streamGop',true],['hls-time','hlsTime',true],['hls-list','hlsList',true],['hls-playlist-type','hlsPlaylistType'],['hls-segment-type','hlsSegmentType'],['converter-target','converterTarget']].forEach(([id,key,numeric]) => updateForm(id,key,numeric));
   const gifDither = $('#gif-dither'); if (gifDither) gifDither.onchange = () => { state.form.gifDither = gifDither.value; saveUi(); render(); };
   const thumbnailFormat = $('#thumb-format'); if (thumbnailFormat) thumbnailFormat.onchange = () => {
     state.form.thumbFormat = thumbnailFormat.value === 'png' ? 'png' : 'jpg';
@@ -655,6 +686,8 @@ function wireView() {
     saveUi(); render();
   };
   const streamMode = $('#stream-mode'); if (streamMode) streamMode.onchange = () => { state.form.streamMode = streamMode.value; saveUi(); render(); };
+  const streamRealtime = $('#stream-realtime'); if (streamRealtime) streamRealtime.onchange = () => { state.form.streamRealtime = streamRealtime.checked; saveUi(); updatePreviews(); };
+  const streamLowLatency = $('#stream-low-latency'); if (streamLowLatency) streamLowLatency.onchange = () => { state.form.streamLowLatency = streamLowLatency.checked; saveUi(); updatePreviews(); };
   const trimNegative = $('#trim-negative'); if (trimNegative) trimNegative.onchange = () => { state.form.avoidNegative = trimNegative.checked; saveUi(); };
 
   $('#queue-convert')?.addEventListener('click', () => enqueue('convert', convertValues, state.outputs.convert?.name || 'Convert'));

@@ -28,7 +28,7 @@ The implementation and bounds are present in source. No live queue, restart reco
 
 ## Command construction
 
-`src/ui/command-builders.js` implements typed builders for conversion, trimming, filtergraphs, audio processing, GIF creation, thumbnails, HLS streaming, low-level composition, and converter adapters. Builders validate supported keys, ranges, codecs, containers, stream selectors, time values, filter text, and file-handle objects before returning arguments.
+`src/ui/command-builders.js` implements typed builders for conversion, trimming, filtergraphs, audio processing, GIF creation, thumbnails, HLS/RTMP/SRT streaming, low-level composition, and converter adapters. Streaming builders validate the HLS playlist and segment contract, bitrate and encoding bounds, selected transport mode, URL protocol/host/port, and forbidden credential-bearing URL fields before returning arguments.
 
 The visual-output surface converts renderer-visible UUIDs into typed input/output handle entries only after the GIF or still builder accepts the selected values. GIF jobs use one selected `.gif` destination. Still jobs use a selected `.jpg`, `.jpeg`, or `.png` destination, seek to a bounded timestamp, and force a one-frame output. The queue resolves those handles to paths in the privileged process and independently requires each declared output to exist and contain bytes before marking the job complete.
 

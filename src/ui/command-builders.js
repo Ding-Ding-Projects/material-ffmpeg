@@ -464,12 +464,16 @@
     return freezeArgv(args);
   }
 
-  const HLS_KEYS = new Set(['input', 'output', 'overwrite', 'progress', 'start', 'duration', 'hlsTime', 'listSize', 'segmentType', 'flags', 'segmentFilename', 'masterPlaylist', 'initFilename', 'videoCodec', 'audioCodec', 'videoBitrate', 'audioBitrate', 'crf', 'preset', 'gop', 'fps', 'width', 'height', 'scaler', 'variants']);
+  const HLS_KEYS = new Set(['input', 'output', 'overwrite', 'progress', 'start', 'duration', 'hlsTime', 'listSize', 'playlistType', 'segmentType', 'flags', 'segmentFilename', 'masterPlaylist', 'initFilename', 'videoCodec', 'audioCodec', 'videoBitrate', 'audioBitrate', 'crf', 'preset', 'gop', 'fps', 'width', 'height', 'scaler', 'variants']);
   const HLS_VARIANT_KEYS = new Set(['name', 'width', 'height', 'videoCodec', 'audioCodec', 'videoBitrate', 'audioBitrate', 'maxRate', 'bufferSize', 'crf', 'preset', 'fps']);
   function appendHlsOptions(args, spec, hasVariants) {
     args.push('-f', 'hls');
     args.push('-hls_time', String(number(spec.hlsTime, 6, 0.1, 86400, 'hlsTime', false)));
-    args.push('-hls_list_size', String(number(spec.listSize, 0, 0, 1000000, 'listSize', true)));
+    const listSize = number(spec.listSize, 0, 0, 1000000, 'listSize', true);
+    const playlistType = enumValue(spec.playlistType, 'live', new Set(['live', 'event', 'vod']), 'playlistType');
+    if (playlistType !== 'live' && listSize !== 0) fail('listSize', 'must be 0 for event or VOD playlists');
+    args.push('-hls_list_size', String(listSize));
+    if (playlistType !== 'live') args.push('-hls_playlist_type', playlistType);
     args.push('-hls_segment_type', enumValue(spec.segmentType, 'mpegts', new Set(['mpegts', 'fmp4']), 'segmentType'));
     const flags = uniqueStrings(spec.flags, 'flags', HLS_FLAGS, HLS_FLAGS.size);
     if (flags.length) args.push('-hls_flags', flags.join('+'));
@@ -558,13 +562,20 @@
     return freezeArgv(args);
   }
 
-  const STREAM_KEYS = new Set(['input', 'target', 'overwrite', 'progress', 'start', 'duration', 'format', 'videoCodec', 'audioCodec', 'videoBitrate', 'audioBitrate', 'crf', 'preset', 'gop', 'fps', 'width', 'height', 'scaler', 'realtime', 'lowLatency']);
+  const STREAM_KEYS = new Set(['input', 'target', 'mode', 'overwrite', 'progress', 'start', 'duration', 'format', 'videoCodec', 'audioCodec', 'videoBitrate', 'audioBitrate', 'crf', 'preset', 'gop', 'fps', 'width', 'height', 'scaler', 'realtime', 'lowLatency']);
   function stream(inputSpec) {
     const spec = object(inputSpec, 'stream', STREAM_KEYS);
     const target = token(spec.target, 'target', { allowLeadingDash: false, maxLength: MAX_PATH_LENGTH });
     let url;
     try { url = new URL(target); } catch { fail('target', 'must be an absolute streaming URL'); }
     if (!STREAM_PROTOCOLS.has(url.protocol)) fail('target', `protocol ${url.protocol || '(none)'} is not supported`);
+    const mode = spec.mode === undefined ? undefined : enumValue(spec.mode, undefined, new Set(['rtmp', 'srt']), 'mode');
+    if (mode === 'rtmp' && !['rtmp:', 'rtmps:'].includes(url.protocol)) fail('target', 'must use rtmp:// or rtmps:// in RTMP mode');
+    if (mode === 'srt' && url.protocol !== 'srt:') fail('target', 'must use srt:// in SRT mode');
+    if (!url.hostname) fail('target', 'must include a host');
+    if (mode === 'srt' && !url.port) fail('target', 'must include a port in SRT mode');
+    if (mode === 'rtmp' && url.pathname.split('/').filter(Boolean).length > 1) fail('target', 'must not include a stream key; enter the server application endpoint only');
+    if (url.hash) fail('target', 'must not include a fragment');
     if (url.username || url.password) fail('target', 'must not embed credentials');
     for (const name of url.searchParams.keys()) {
       if (/^(?:passphrase|password|token|key)$/iu.test(name)) fail('target', 'must not embed secret query parameters');
@@ -582,6 +593,8 @@
     if (boolean(spec.lowLatency, false, 'lowLatency')) args.push('-tune', 'zerolatency', '-fflags', 'nobuffer');
     const inferredFormat = ['rtmp:', 'rtmps:'].includes(url.protocol) ? 'flv' : url.protocol === 'rtsp:' ? 'rtsp' : 'mpegts';
     const format = enumValue(spec.format, inferredFormat, new Set(['flv', 'mpegts', 'rtsp']), 'format');
+    if (mode === 'rtmp' && format !== 'flv') fail('format', 'must be flv in RTMP mode');
+    if (mode === 'srt' && format !== 'mpegts') fail('format', 'must be mpegts in SRT mode');
     args.push('-f', format, target);
     return freezeArgv(args);
   }

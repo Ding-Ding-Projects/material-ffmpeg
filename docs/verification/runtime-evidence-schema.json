@@ -1,0 +1,835 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ding-ding-projects.github.io/material-ffmpeg/schemas/runtime-evidence-receipt-v1.json",
+  "title": "material-ffmpeg runtime evidence receipt",
+  "description": "A fail-closed receipt for runtime verification. The receipt records observations without treating an unexecuted check as success.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "candidate",
+    "collectionPolicy",
+    "areas"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "candidate": {
+      "$ref": "#/$defs/candidate"
+    },
+    "collectionPolicy": {
+      "$ref": "#/$defs/collectionPolicy"
+    },
+    "areas": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parsers",
+        "opaqueFileRegistry",
+        "jobLifecycle",
+        "ipcBoundary",
+        "bundledChildProcess"
+      ],
+      "properties": {
+        "parsers": {
+          "$ref": "#/$defs/parserArea"
+        },
+        "opaqueFileRegistry": {
+          "$ref": "#/$defs/opaqueFileRegistryArea"
+        },
+        "jobLifecycle": {
+          "$ref": "#/$defs/jobLifecycleArea"
+        },
+        "ipcBoundary": {
+          "$ref": "#/$defs/ipcBoundaryArea"
+        },
+        "bundledChildProcess": {
+          "$ref": "#/$defs/bundledChildProcessArea"
+        }
+      }
+    }
+  },
+  "x-currentFeatureEvidenceManifest": {
+    "candidateCommitSha": "8a3d84932149e58a419a67dc3acb11842a85bf79",
+    "collectionBoundary": {
+      "testsRun": false,
+      "lintRun": false,
+      "capturesRun": false,
+      "runtimeInteractionRun": false
+    },
+    "areas": {
+      "parsers": {
+        "implementationSources": [
+          "src/runtime/ffmpeg-parsers.js"
+        ],
+        "declaredContracts": [
+          "Incremental bounded FFmpeg progress parsing",
+          "Bounded and sanitized ffprobe JSON parsing",
+          "Normalized FFmpeg inventory parsing",
+          "Terminal-control removal from displayed help and inventory text"
+        ],
+        "verdict": "unrun",
+        "eligibleEvidence": [],
+        "unrunReason": "No parser execution was authorized for this verification pass."
+      },
+      "opaqueFileRegistry": {
+        "implementationSources": [
+          "src/runtime/file-registry.js",
+          "src/main.js",
+          "src/preload.js"
+        ],
+        "declaredContracts": [
+          "Renderer-visible descriptors omit local paths",
+          "Input and output handles retain separate capabilities",
+          "Malformed and unknown handles are rejected",
+          "Path resolution remains inside the main-process boundary"
+        ],
+        "verdict": "unrun",
+        "eligibleEvidence": [],
+        "unrunReason": "No registry or renderer-boundary interaction was authorized for this verification pass."
+      },
+      "jobLifecycle": {
+        "implementationSources": [
+          "src/runtime/job-manager.js",
+          "src/runtime/safe-process.js"
+        ],
+        "declaredContracts": [
+          "Durable bounded queue state",
+          "Explicit queued, running, paused, completed, failed, cancelled, and interrupted transitions",
+          "Bounded concurrency, logs, progress, and retained history",
+          "Pause, resume, cancellation, restart interruption, and output validation"
+        ],
+        "verdict": "unrun",
+        "eligibleEvidence": [],
+        "unrunReason": "No queue lifecycle execution or restart interaction was authorized for this verification pass."
+      },
+      "ipcBoundary": {
+        "implementationSources": [
+          "src/main.js",
+          "src/preload.js"
+        ],
+        "declaredContracts": [
+          "Trusted main-frame sender enforcement",
+          "Explicit runtime, file, catalog, probe, job, and window channel allowlist",
+          "Frozen preload bridge with removable event subscriptions",
+          "No renderer filesystem path, shell, process-spawn, or executable-selection authority"
+        ],
+        "verdict": "unrun",
+        "eligibleEvidence": [],
+        "unrunReason": "No IPC sender or preload bridge interaction was authorized for this verification pass."
+      },
+      "bundledChildProcess": {
+        "implementationSources": [
+          "src/runtime/safe-process.js",
+          "src/runtime/runtime-service.js",
+          "src/runtime/job-manager.js"
+        ],
+        "declaredContracts": [
+          "Packaged FFmpeg and ffprobe resolution beneath application resources",
+          "Child processes start hidden with shell disabled and bounded argument arrays",
+          "Local paths enter arguments only through opaque file handles",
+          "Real FFmpeg and ffprobe exit, progress, diagnostic, timeout, and output validation"
+        ],
+        "verdict": "unrun",
+        "eligibleEvidence": [],
+        "unrunReason": "No real bundled child-process execution was authorized for this verification pass. Build logs and packaging configuration are not runtime evidence."
+      }
+    }
+  },
+  "x-aggregateVerdictAlgorithm": {
+    "working": "Set an area to working only when every required check in that area is working and no contradictory evidence is present.",
+    "not-working": "Set an area to not-working when one or more required checks are not-working, even when other checks are working or unrun.",
+    "unrun": "Set an area to unrun when no required check is not-working and at least one required check is unrun. A partially observed area is unrun, not working."
+  },
+  "$defs": {
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commitSha",
+        "appVersion",
+        "artifactSha256",
+        "artifactName"
+      ],
+      "properties": {
+        "commitSha": {
+          "$ref": "#/$defs/commitSha"
+        },
+        "appVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "artifactSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "artifactName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "pattern": "^[^\\\\/:*?\"<>|\\u0000-\\u001f]+$"
+        }
+      }
+    },
+    "collectionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "testsRun",
+        "lintRun",
+        "capturesRun",
+        "runtimeInteractionRun"
+      ],
+      "properties": {
+        "testsRun": {
+          "type": "boolean"
+        },
+        "lintRun": {
+          "type": "boolean"
+        },
+        "capturesRun": {
+          "type": "boolean"
+        },
+        "runtimeInteractionRun": {
+          "type": "boolean"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 2000
+        }
+      }
+    },
+    "commitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?![A-Za-z]:[\\\\/])(?![\\\\/]{1,2})(?!.*(?:^|[\\\\/])\\.\\.(?:[\\\\/]|$))[^\\u0000-\\u001f]+$"
+    },
+    "processReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "executableRelativePath",
+        "arguments",
+        "shell",
+        "windowsHide",
+        "exitCode"
+      ],
+      "properties": {
+        "executableRelativePath": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "arguments": {
+          "type": "array",
+          "maxItems": 261,
+          "items": {
+            "type": "string",
+            "maxLength": 8192,
+            "pattern": "^[^\\u0000\\r\\n]*$"
+          }
+        },
+        "shell": {
+          "const": false
+        },
+        "windowsHide": {
+          "const": true
+        },
+        "exitCode": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "signal": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "observedAt",
+        "candidateCommitSha",
+        "executionKind",
+        "method",
+        "subject",
+        "outcome",
+        "summary"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{2,79}$"
+        },
+        "observedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "candidateCommitSha": {
+          "$ref": "#/$defs/commitSha"
+        },
+        "executionKind": {
+          "enum": [
+            "built-artifact-runtime",
+            "source-runtime",
+            "static-inspection"
+          ]
+        },
+        "method": {
+          "enum": [
+            "process-execution",
+            "ipc-interaction",
+            "state-transition",
+            "file-observation",
+            "source-inspection"
+          ]
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240
+        },
+        "outcome": {
+          "enum": [
+            "matched",
+            "mismatched"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400000
+        },
+        "artifactSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "artifactRelativePath": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "process": {
+          "$ref": "#/$defs/processReceipt"
+        },
+        "details": {
+          "type": "object",
+          "maxProperties": 32,
+          "additionalProperties": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "builtArtifactEvidence": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/evidence"
+        },
+        {
+          "type": "object",
+          "required": [
+            "artifactSha256",
+            "artifactRelativePath",
+            "process"
+          ],
+          "properties": {
+            "executionKind": {
+              "const": "built-artifact-runtime"
+            },
+            "method": {
+              "const": "process-execution"
+            }
+          }
+        }
+      ]
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "expectedBehavior",
+        "observedBehavior"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{2,79}$"
+        },
+        "expectedBehavior": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "observedBehavior": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      }
+    },
+    "checkReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "evidence"
+      ],
+      "properties": {
+        "verdict": {
+          "enum": [
+            "working",
+            "not-working",
+            "unrun"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        },
+        "failure": {
+          "$ref": "#/$defs/failure"
+        },
+        "unrunReason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "verdict": {
+                "const": "working"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "minItems": 1,
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/evidence"
+                    },
+                    {
+                      "properties": {
+                        "outcome": {
+                          "const": "matched"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "failure"
+                  ]
+                },
+                {
+                  "required": [
+                    "unrunReason"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "verdict": {
+                "const": "not-working"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "failure"
+            ],
+            "properties": {
+              "evidence": {
+                "minItems": 1,
+                "contains": {
+                  "properties": {
+                    "outcome": {
+                      "const": "mismatched"
+                    }
+                  }
+                },
+                "minContains": 1
+              }
+            },
+            "not": {
+              "required": [
+                "unrunReason"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "verdict": {
+                "const": "unrun"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "unrunReason"
+            ],
+            "properties": {
+              "evidence": {
+                "maxItems": 0
+              }
+            },
+            "not": {
+              "required": [
+                "failure"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "runtimeCheckReceipt": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/checkReceipt"
+        },
+        {
+          "if": {
+            "properties": {
+              "verdict": {
+                "enum": [
+                  "working",
+                  "not-working"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/evidence"
+                    },
+                    {
+                      "properties": {
+                        "executionKind": {
+                          "enum": [
+                            "built-artifact-runtime",
+                            "source-runtime"
+                          ]
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "builtArtifactCheckReceipt": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/checkReceipt"
+        },
+        {
+          "if": {
+            "properties": {
+              "verdict": {
+                "enum": [
+                  "working",
+                  "not-working"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "evidence": {
+                "items": {
+                  "$ref": "#/$defs/builtArtifactEvidence"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "areaVerdict": {
+      "enum": [
+        "working",
+        "not-working",
+        "unrun"
+      ]
+    },
+    "parserArea": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "checks"
+      ],
+      "properties": {
+        "verdict": {
+          "$ref": "#/$defs/areaVerdict"
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "incrementalProgress",
+            "probeJsonBounds",
+            "inventoryNormalization",
+            "terminalControlSanitization"
+          ],
+          "properties": {
+            "incrementalProgress": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "probeJsonBounds": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "inventoryNormalization": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "terminalControlSanitization": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            }
+          }
+        }
+      },
+      "x-verdictCriteria": {
+        "working": "Every parser check has executed against the candidate, returned bounded normalized data, rejected malformed or over-limit input, and has only matched evidence.",
+        "not-working": "At least one executed parser check crashes, accepts malformed or over-limit input, emits unsafe keys or terminal controls, corrupts chunked UTF-8, or produces a mismatched normalized result.",
+        "unrun": "No parser failure was observed, but at least one required parser behavior has no eligible executed receipt. Source inspection alone cannot make parser behavior working."
+      }
+    },
+    "opaqueFileRegistryArea": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "checks"
+      ],
+      "properties": {
+        "verdict": {
+          "$ref": "#/$defs/areaVerdict"
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "descriptorOpacity",
+            "capabilityKindSeparation",
+            "invalidHandleRejection",
+            "mainBoundaryResolution"
+          ],
+          "properties": {
+            "descriptorOpacity": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "capabilityKindSeparation": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "invalidHandleRejection": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "mainBoundaryResolution": {
+              "$ref": "#/$defs/checkReceipt"
+            }
+          }
+        }
+      },
+      "x-verdictCriteria": {
+        "working": "Every returned descriptor omits local paths, input and output handles cannot be interchanged, malformed and unknown handles are rejected, and only the trusted main-process boundary resolves a handle to a path.",
+        "not-working": "Any renderer-visible descriptor or event exposes a local path, a handle crosses its input or output capability, an invalid handle resolves, or renderer code receives path-resolution authority.",
+        "unrun": "No registry failure was observed, but at least one opacity, kind, rejection, or boundary receipt is absent. A class existing in source is not runtime proof."
+      }
+    },
+    "jobLifecycleArea": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "checks"
+      ],
+      "properties": {
+        "verdict": {
+          "$ref": "#/$defs/areaVerdict"
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "durableReload",
+            "stateTransitions",
+            "concurrencyBound",
+            "pauseResumeCancel",
+            "boundedLogsAndProgress",
+            "outputValidation"
+          ],
+          "properties": {
+            "durableReload": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "stateTransitions": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "concurrencyBound": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "pauseResumeCancel": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "boundedLogsAndProgress": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "outputValidation": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            }
+          }
+        }
+      },
+      "x-verdictCriteria": {
+        "working": "All required transitions execute in order; retained state reloads; formerly active work becomes interrupted after restart; concurrency never exceeds the configured bound; pause, resume, and cancel affect the owned process; logs and progress remain bounded; and success requires non-empty declared outputs.",
+        "not-working": "Any invalid transition is accepted, persisted work disappears or silently resumes after interruption, active processes exceed the configured bound, lifecycle controls affect the wrong process or do nothing, logs or progress exceed bounds, or missing or empty output is reported completed.",
+        "unrun": "No lifecycle failure was observed, but at least one restart, transition, concurrency, control, bound, or output receipt is absent. A queued record or source-only state diagram is not execution evidence."
+      }
+    },
+    "ipcBoundaryArea": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "checks"
+      ],
+      "properties": {
+        "verdict": {
+          "$ref": "#/$defs/areaVerdict"
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "trustedSenderRejection",
+            "channelAllowlist",
+            "preloadExposure",
+            "rendererAuthorityExclusion"
+          ],
+          "properties": {
+            "trustedSenderRejection": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "channelAllowlist": {
+              "$ref": "#/$defs/checkReceipt"
+            },
+            "preloadExposure": {
+              "$ref": "#/$defs/runtimeCheckReceipt"
+            },
+            "rendererAuthorityExclusion": {
+              "$ref": "#/$defs/checkReceipt"
+            }
+          }
+        }
+      },
+      "x-verdictCriteria": {
+        "working": "Only the declared window, runtime, files, catalog, probe, and jobs channels are exposed; an untrusted sender and non-main frame are rejected; preload methods map to their exact channels; and the renderer receives neither filesystem paths nor process-spawn, shell, or executable-selection authority.",
+        "not-working": "An untrusted sender reaches a handler, an undeclared channel is reachable, a preload method maps to the wrong channel, a listener cannot be removed, or renderer code gains a path, shell, process-spawn, or arbitrary executable capability.",
+        "unrun": "No IPC failure was observed, but at least one sender, allowlist, bridge mapping, listener cleanup, or renderer-authority receipt is absent. Static inspection may support the allowlist but cannot make sender rejection working."
+      }
+    },
+    "bundledChildProcessArea": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdict",
+        "checks"
+      ],
+      "properties": {
+        "verdict": {
+          "$ref": "#/$defs/areaVerdict"
+        },
+        "checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "packagedResolution",
+            "shellDisabled",
+            "controlledArguments",
+            "ffmpegVersion",
+            "ffmpegExecution",
+            "ffprobeExecution",
+            "producedOutputValidation"
+          ],
+          "properties": {
+            "packagedResolution": {
+              "$ref": "#/$defs/builtArtifactCheckReceipt"
+            },
+            "shellDisabled": {
+              "$ref": "#/$defs/builtArtifactCheckReceipt"
+            },
+            "controlledArguments": {
+              "$ref": "#/$defs/builtArtifactCheckReceipt"
+            },
+            "ffmpegVersion": {
+              "$ref": "#/$defs/builtArtifactCheckReceipt"
+            },
+            "ffmpegExecution": {
+              "$ref": "#/$defs/builtArtifactCheckReceipt"
+            },
+            "ffprobeExecution": {
+              "$ref": "#/$defs/builtArtifactCheckReceipt"
+            },
+            "producedOutputValidation": {
+              "$ref": "#/$defs/builtArtifactCheckReceipt"
+            }
+          }
+        }
+      },
+      "x-verdictCriteria": {
+        "working": "Every check is observed from the exact packaged artifact hash: bundled FFmpeg and ffprobe resolve inside packaged resources, each process starts with shell=false and an argument array derived from trusted literals plus opaque handles, both report the expected bundled version, a real bounded FFmpeg job and ffprobe inspection exit zero, and the produced media is non-empty and independently reopened or probed.",
+        "not-working": "The packaged executable is absent or resolves outside packaged resources, a shell or command string is used, an uncontrolled local path or executable is accepted, the version differs, either real process exits nonzero or times out, or the claimed output is missing, empty, stale, or cannot be reopened or probed.",
+        "unrun": "No bundled-process failure was observed, but at least one required check lacks a built-artifact-runtime receipt tied to the exact artifact SHA-256. Source-runtime, mocked-process, static, build-log, or packaging-configuration evidence cannot make this area working."
+      }
+    }
+  }
+}

@@ -32,6 +32,26 @@ function Get-Sha256([string]$Path) {
   return Get-FileSha256 -LiteralPath $Path
 }
 
+function Get-VersionBanner([string]$Executable) {
+  $startInfo = New-Object Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $Executable
+  $startInfo.Arguments = '-version'
+  $startInfo.UseShellExecute = $false
+  $startInfo.CreateNoWindow = $true
+  $startInfo.RedirectStandardOutput = $true
+  $startInfo.RedirectStandardError = $true
+  $process = [Diagnostics.Process]::Start($startInfo)
+  try {
+    $stdout = $process.StandardOutput.ReadToEnd()
+    $stderr = $process.StandardError.ReadToEnd()
+    $process.WaitForExit()
+    if ($process.ExitCode -ne 0) { throw "$Executable -version exited with code $($process.ExitCode)." }
+    return "$stdout`n$stderr"
+  } finally {
+    $process.Dispose()
+  }
+}
+
 function Ensure-Directory([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Container)) {
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
@@ -78,9 +98,9 @@ Ensure-Directory (Split-Path -Parent $targetRoot)
 $existingFfmpeg = Join-Path $targetRoot 'ffmpeg.exe'
 $existingFfprobe = Join-Path $targetRoot 'ffprobe.exe'
 if ((Test-Path -LiteralPath $existingFfmpeg -PathType Leaf) -and (Test-Path -LiteralPath $existingFfprobe -PathType Leaf)) {
-  $existingFfmpegVersion = (& $existingFfmpeg '-version' 2>&1 | Select-Object -First 1)
-  $existingFfprobeVersion = (& $existingFfprobe '-version' 2>&1 | Select-Object -First 1)
-  if ($existingFfmpegVersion -match '^ffmpeg version 9\.0\.1(?:\s|$)' -and $existingFfprobeVersion -match '^ffprobe version 9\.0\.1(?:\s|$)') {
+  $existingFfmpegVersion = Get-VersionBanner $existingFfmpeg
+  $existingFfprobeVersion = Get-VersionBanner $existingFfprobe
+  if ($existingFfmpegVersion -match '(?m)^ffmpeg version 9\.0\.1(?:-|\s|$)' -and $existingFfprobeVersion -match '(?m)^ffprobe version 9\.0\.1(?:-|\s|$)') {
     Write-Phase "Already ready: $targetRoot (FFmpeg $($spec.version))."
     exit 0
   }
@@ -119,9 +139,9 @@ Get-ChildItem -LiteralPath $staging -Recurse -File | Where-Object { $_.Name -mat
   Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $targetRoot $_.Name) -Force
 }
 
-$ffmpegVersion = (& (Join-Path $targetRoot 'ffmpeg.exe') '-version' 2>&1 | Select-Object -First 1)
-$ffprobeVersion = (& (Join-Path $targetRoot 'ffprobe.exe') '-version' 2>&1 | Select-Object -First 1)
-if ($ffmpegVersion -notmatch '^ffmpeg version 9\.0\.1(?:\s|$)' -or $ffprobeVersion -notmatch '^ffprobe version 9\.0\.1(?:\s|$)') {
+$ffmpegVersion = Get-VersionBanner (Join-Path $targetRoot 'ffmpeg.exe')
+$ffprobeVersion = Get-VersionBanner (Join-Path $targetRoot 'ffprobe.exe')
+if ($ffmpegVersion -notmatch '(?m)^ffmpeg version 9\.0\.1(?:-|\s|$)' -or $ffprobeVersion -notmatch '(?m)^ffprobe version 9\.0\.1(?:-|\s|$)') {
   throw "Extracted FFmpeg version check failed. ffmpeg='$ffmpegVersion'; ffprobe='$ffprobeVersion'."
 }
 

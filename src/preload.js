@@ -17,16 +17,28 @@ contextBridge.exposeInMainWorld('api', Object.freeze({
     save: (options) => ipcRenderer.invoke('files:save', options)
   }),
   catalog: Object.freeze({
-    list: (kind) => ipcRenderer.invoke('catalog:list', kind),
-    help: (kind, name) => ipcRenderer.invoke('catalog:help', kind, name)
+    list: (kind, options) => ipcRenderer.invoke('catalog:list', kind, options),
+    help: (kind, name, options) => ipcRenderer.invoke('catalog:help', kind, name, options)
   }),
   probe: Object.freeze({
     inspect: (fileHandle) => ipcRenderer.invoke('probe:inspect', fileHandle),
     export: (spec) => ipcRenderer.invoke('probe:export', spec)
   }),
+  loudnorm: Object.freeze({
+    retainSelections: (spec) => ipcRenderer.invoke('loudnorm:retain-selections', spec)
+  }),
+  composer: Object.freeze({
+    enqueue: (request) => ipcRenderer.invoke('composer:enqueue', request)
+  }),
+  converter: Object.freeze({
+    selectInputs: () => ipcRenderer.invoke('converter:select-inputs'),
+    prepareOutputs: (spec) => ipcRenderer.invoke('converter:prepare-outputs', spec),
+    releaseHandles: (handles) => ipcRenderer.invoke('converter:release-handles', handles)
+  }),
   jobs: Object.freeze({
     enqueue: (spec) => ipcRenderer.invoke('jobs:enqueue', spec),
     list: () => ipcRenderer.invoke('jobs:list'),
+    setConcurrency: (value) => ipcRenderer.invoke('jobs:set-concurrency', value),
     pause: (id) => ipcRenderer.invoke('jobs:pause', id),
     resume: (id) => ipcRenderer.invoke('jobs:resume', id),
     cancel: (id) => ipcRenderer.invoke('jobs:cancel', id),

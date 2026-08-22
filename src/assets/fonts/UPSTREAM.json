@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "project": "Material Symbols",
+  "repository": "https://github.com/google/material-design-icons",
+  "commit": "e083cc60a0828fdd3b404cea0cb8a5b900e9c23e",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "path": "material-symbols-outlined.woff2",
+      "upstreamPath": "variablefont/MaterialSymbolsOutlined[FILL,GRAD,opsz,wght].woff2",
+      "upstreamBlob": "97058556815345e25ec3a3d68a27c21ef31f93b8",
+      "bytes": 3960036,
+      "sha256": "9ec3f3deed0be4da191a434b78fdc53e76ead92333290d3f8ee9f3dde34b6339"
+    },
+    {
+      "path": "material-symbols-outlined.codepoints",
+      "upstreamPath": "variablefont/MaterialSymbolsOutlined[FILL,GRAD,opsz,wght].codepoints",
+      "upstreamBlob": "0594d3400fd969c667aea8cf6a5da43be93563c0",
+      "bytes": 78751,
+      "sha256": "cb8e63e819c1172b9653b7f15fecd024ac329f7854f65e9c7dc7cc9b78d993eb"
+    },
+    {
+      "path": "LICENSE.txt",
+      "upstreamPath": "LICENSE",
+      "upstreamBlob": "7a4a3ea2424c09fbe48d455aed1eaa94d9124835",
+      "bytes": 11357,
+      "sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+    }
+  ]
+}

@@ -1,0 +1,354 @@
+{
+  "schemaVersion": 1,
+  "bundleVersion": 1,
+  "generatedFrom": "docs/articles/index.json",
+  "defaultArticle": "project-overview",
+  "limits": {
+    "maximumManifestBytes": 262144,
+    "maximumArticleBytes": 131072,
+    "maximumQueryCharacters": 512,
+    "maximumRegexCharacters": 256,
+    "maximumRenderedMatches": 500,
+    "maximumArticleCount": 200
+  },
+  "apiContract": {
+    "namespace": "offlineDocs",
+    "methods": {
+      "getManifest": "Promise<{ ok: true, value: manifest } | { ok: false, error: string }>",
+      "readArticle": "Promise<{ ok: true, value: { id, title, markdown } } | { ok: false, error: string }>",
+      "copyText": "Promise<{ ok: true, value: true } | { ok: false, error: string }>",
+      "exportArticle": "Promise<{ ok: true, value?: { destinationLabel }, cancelled?: true } | { ok: false, error: string }>"
+    },
+    "authority": "The renderer receives bundled article text through an injected bridge. It has no filesystem or process authority."
+  },
+  "categories": [
+    {
+      "id": "project",
+      "label": "Project records"
+    },
+    {
+      "id": "application",
+      "label": "Desktop application"
+    },
+    {
+      "id": "delivery",
+      "label": "Build and release"
+    }
+  ],
+  "articles": [
+    {
+      "id": "accessibility",
+      "title": "Application accessibility",
+      "category": "application",
+      "summary": "Keyboard, screen-reader, focus, reduced-motion, contrast, touch, and scaling behavior.",
+      "sourcePath": "docs/articles/project/accessibility.md",
+      "bundlePath": "articles/accessibility.md",
+      "bytes": 1745,
+      "sha256": "9298d82f3b24d03e797e8db175a7eef7c9c8dd0feac26a19777f9c782e15f5e1",
+      "related": [
+        "privacy-security",
+        "settings-preferences",
+        "feature-ledger"
+      ],
+      "sourceBytes": 1772,
+      "sourceSha256": "08ec807e2b7c10f8a23421ea3c4dbedc7418270cee1bb9521c71d68f6695513d"
+    },
+    {
+      "id": "architecture-runtime",
+      "title": "Architecture and trusted runtime",
+      "category": "application",
+      "summary": "Renderer isolation, trusted FFmpeg resolution, narrow IPC, and packaged runtime ownership.",
+      "sourcePath": "docs/articles/project/architecture-runtime.md",
+      "bundlePath": "articles/architecture-runtime.md",
+      "bytes": 2528,
+      "sha256": "7d12cff528384e0b69b1ebe370ef2d9a82b593ae202765c0d1b5dd7b4c997572",
+      "related": [
+        "jobs-queue-commands",
+        "conversion-inspector-catalog",
+        "privacy-security"
+      ],
+      "sourceBytes": 2559,
+      "sourceSha256": "2c23a5100bf39107560046a56e6f170eb79a0bf84bc237c5bb92656bbdce6c99"
+    },
+    {
+      "id": "build-install-dependencies",
+      "title": "Build, install, and dependencies",
+      "category": "delivery",
+      "summary": "Pinned toolchain acquisition, one-click builds, bundled FFmpeg, and unsigned Squirrel packaging.",
+      "sourcePath": "docs/articles/project/build-install-dependencies.md",
+      "bundlePath": "articles/build-install-dependencies.md",
+      "bytes": 2414,
+      "sha256": "c985fc60ef475ca0af5563e92c5d6ff5b7d31a4656347f3cac57a7e218e8f487",
+      "related": [
+        "licensing-notices",
+        "update-release",
+        "handoff",
+        "feature-ledger"
+      ],
+      "sourceBytes": 2451,
+      "sourceSha256": "d0838fd3b62de6cb6579354a4a720e70b66cb1642853e92e47f5a914e67eb93c"
+    },
+    {
+      "id": "conversion-inspector-catalog",
+      "title": "Conversion, inspector, and option catalog",
+      "category": "application",
+      "summary": "Guided FFmpeg workflows, FFprobe inspection, and bounded runtime option help.",
+      "sourcePath": "docs/articles/project/conversion-inspector-catalog.md",
+      "bundlePath": "articles/conversion-inspector-catalog.md",
+      "bytes": 9704,
+      "sha256": "4a1fc30504d4a2de8cd36fdddad44ab918397b85f2bd773abf5806886555acc1",
+      "related": [
+        "architecture-runtime",
+        "jobs-queue-commands",
+        "privacy-security"
+      ],
+      "sourceBytes": 11167,
+      "sourceSha256": "63cf2db0539ec6b177085b6fa5da828b3ca58a291dbd6b37367436ae3677d913"
+    },
+    {
+      "id": "design-provenance",
+      "title": "Design reference provenance",
+      "category": "project",
+      "summary": "How the supplied design export is preserved and treated as reference data.",
+      "sourcePath": "docs/articles/project/design-provenance.md",
+      "bundlePath": "articles/design-provenance.md",
+      "bytes": 2011,
+      "sha256": "670ebc7ccf0747bcb040a6df962d88ae1e60b56072a06297196b59f03a74b7f0",
+      "related": [
+        "project-overview",
+        "architecture-runtime",
+        "feature-ledger"
+      ],
+      "sourceBytes": 2040,
+      "sourceSha256": "1e56c23093d3ca22814ff1b28d2c4cefcfdf46d9d72cdab226bc99d1ef377a0f"
+    },
+    {
+      "id": "feature-ledger",
+      "title": "Feature verification ledger",
+      "category": "project",
+      "summary": "A factual list of implemented, pending, working, and not-yet-verified behavior.",
+      "sourcePath": "docs/articles/project/feature-ledger.md",
+      "bundlePath": "articles/feature-ledger.md",
+      "bytes": 7444,
+      "sha256": "a50ac364df999bc1009b1045a4cfa5cf2d409594e7d9a534630bf06b85d99624",
+      "related": [
+        "project-overview",
+        "handoff",
+        "privacy-security",
+        "build-install-dependencies"
+      ],
+      "sourceBytes": 11812,
+      "sourceSha256": "e31c28ef43988494d4b94af66c01cfaa074a03ec01e56140b3ce8a223468b6fd"
+    },
+    {
+      "id": "handoff",
+      "title": "Current handoff",
+      "category": "project",
+      "summary": "The preserved delivery baseline, implementation ownership, evidence, and remaining work.",
+      "sourcePath": "docs/articles/project/handoff.md",
+      "bundlePath": "articles/handoff.md",
+      "bytes": 2245,
+      "sha256": "18a91b0aea2ba2f7f3057b39c6c9c77df5a354d2ec1bc988d72e2e5610403528",
+      "related": [
+        "roadmap",
+        "feature-ledger",
+        "update-release"
+      ],
+      "sourceBytes": 2280,
+      "sourceSha256": "b2e163b3cd8cb8b44c9c7c927de13c2eed27a0ba5c91d8e7107fe3b3525fe1b9"
+    },
+    {
+      "id": "jobs-queue-commands",
+      "title": "Jobs, queue, and command builders",
+      "category": "application",
+      "summary": "Validated argv construction, concurrency, lifecycle controls, progress, and durable job state.",
+      "sourcePath": "docs/articles/project/jobs-queue-commands.md",
+      "bundlePath": "articles/jobs-queue-commands.md",
+      "bytes": 3289,
+      "sha256": "311bde2edeeccada824502cf96be856ebd8e16db01d1469d093ac8c6a30fe8ba",
+      "related": [
+        "architecture-runtime",
+        "conversion-inspector-catalog",
+        "privacy-security"
+      ],
+      "sourceBytes": 3328,
+      "sourceSha256": "48c97d2df8dd2a19bf5c7608cd59955b09ab60809f4956d5e6e8d517d3cb63e0"
+    },
+    {
+      "id": "licensing-notices",
+      "title": "Licensing and third-party notices",
+      "category": "project",
+      "summary": "MIT application licensing and the separate GPLv3 FFmpeg distribution boundary.",
+      "sourcePath": "docs/articles/project/licensing-notices.md",
+      "bundlePath": "articles/licensing-notices.md",
+      "bytes": 2056,
+      "sha256": "132d3a1fe5e6bb960eb6be4f21c5968c1316233f0808a0ae85fe7c147b2573d4",
+      "related": [
+        "build-install-dependencies",
+        "privacy-security",
+        "design-provenance"
+      ],
+      "sourceBytes": 2089,
+      "sourceSha256": "fe57e6119e7a88d256dad855c04aa8bcac67d5ce9c5c79b94274ecd033c14950"
+    },
+    {
+      "id": "privacy-security",
+      "title": "Privacy and security",
+      "category": "project",
+      "summary": "Local media processing, process boundaries, sensitive data handling, and known limits.",
+      "sourcePath": "docs/articles/project/privacy-security.md",
+      "bundlePath": "articles/privacy-security.md",
+      "bytes": 2125,
+      "sha256": "78a0af41093ad1c4be44a2aaf4f2ed8f76ef2aa5250fbf170146584c777d675c",
+      "related": [
+        "architecture-runtime",
+        "accessibility",
+        "settings-preferences",
+        "feature-ledger"
+      ],
+      "sourceBytes": 2156,
+      "sourceSha256": "3df4f195f6ce5e190c3e6c4af0d14108a6add49a33012f3d36f0ce790ac7cc05"
+    },
+    {
+      "id": "project-overview",
+      "title": "Project overview",
+      "category": "project",
+      "summary": "Purpose, repository layout, current delivery state, and supported Windows scope.",
+      "sourcePath": "docs/articles/project/project-overview.md",
+      "bundlePath": "articles/project-overview.md",
+      "bytes": 2949,
+      "sha256": "01aa013f0ed74d844d5f62666d9b634fb7dd7653dc4859658f1b7d5672e9b2fc",
+      "related": [
+        "architecture-runtime",
+        "build-install-dependencies",
+        "feature-ledger"
+      ],
+      "sourceBytes": 2989,
+      "sourceSha256": "27c5ae69c283846947a360e436cb397f5fe24aac3c9f3f5160341d7097c9ea79"
+    },
+    {
+      "id": "roadmap",
+      "title": "Roadmap",
+      "category": "project",
+      "summary": "Completed foundations and the exact release-grade work that remains.",
+      "sourcePath": "docs/articles/project/roadmap.md",
+      "bundlePath": "articles/roadmap.md",
+      "bytes": 1986,
+      "sha256": "9398d9b97646f4b431fb4c91094d488185beb93160e9442862de38eca27c7b76",
+      "related": [
+        "feature-ledger",
+        "architecture-runtime",
+        "handoff"
+      ],
+      "sourceBytes": 2015,
+      "sourceSha256": "1a8b5034d0ea4f66040427a46a04526bdedcc6740acdc43241887125a558c823"
+    },
+    {
+      "id": "settings-preferences",
+      "title": "Application settings and preferences",
+      "category": "application",
+      "summary": "Local appearance, workspace, runtime, queue, and privacy preference behavior.",
+      "sourcePath": "docs/articles/project/settings-preferences.md",
+      "bundlePath": "articles/settings-preferences.md",
+      "bytes": 2443,
+      "sha256": "0c63c3238b2fd2a3ace8728e4e8f5c384de3763e97c9f81360152e98208ea533",
+      "related": [
+        "privacy-security",
+        "feature-ledger",
+        "jobs-queue-commands"
+      ],
+      "sourceBytes": 2474,
+      "sourceSha256": "09b5e2710d2730fccd6c4d16858d6c69e8215cb2e7d6e4692b25003d0c4d2501"
+    },
+    {
+      "id": "update-release",
+      "title": "Updates and releases",
+      "category": "delivery",
+      "summary": "Automatic update behavior, direct build-and-release automation, evidence, and release assets.",
+      "sourcePath": "docs/articles/project/update-release.md",
+      "bundlePath": "articles/update-release.md",
+      "bytes": 1885,
+      "sha256": "17e2715da6a998735e1a145fa144a7495006ef25933ed4fbb68127f2ff82a544",
+      "related": [
+        "build-install-dependencies",
+        "handoff",
+        "feature-ledger"
+      ],
+      "sourceBytes": 1912,
+      "sourceSha256": "09033f0479dd430f2f56cdd32c056d66beaf0338f8f4fcf7035bcad22dca14c7"
+    }
+  ],
+  "linkMap": {
+    "doc:accessibility": "accessibility",
+    "doc://accessibility": "accessibility",
+    "articles/project/accessibility.md": "accessibility",
+    "../project/accessibility.md": "accessibility",
+    "accessibility.md": "accessibility",
+    "doc:architecture-runtime": "architecture-runtime",
+    "doc://architecture-runtime": "architecture-runtime",
+    "articles/project/architecture-runtime.md": "architecture-runtime",
+    "../project/architecture-runtime.md": "architecture-runtime",
+    "architecture-runtime.md": "architecture-runtime",
+    "doc:build-install-dependencies": "build-install-dependencies",
+    "doc://build-install-dependencies": "build-install-dependencies",
+    "articles/project/build-install-dependencies.md": "build-install-dependencies",
+    "../project/build-install-dependencies.md": "build-install-dependencies",
+    "build-install-dependencies.md": "build-install-dependencies",
+    "doc:conversion-inspector-catalog": "conversion-inspector-catalog",
+    "doc://conversion-inspector-catalog": "conversion-inspector-catalog",
+    "articles/project/conversion-inspector-catalog.md": "conversion-inspector-catalog",
+    "../project/conversion-inspector-catalog.md": "conversion-inspector-catalog",
+    "conversion-inspector-catalog.md": "conversion-inspector-catalog",
+    "doc:design-provenance": "design-provenance",
+    "doc://design-provenance": "design-provenance",
+    "articles/project/design-provenance.md": "design-provenance",
+    "../project/design-provenance.md": "design-provenance",
+    "design-provenance.md": "design-provenance",
+    "doc:feature-ledger": "feature-ledger",
+    "doc://feature-ledger": "feature-ledger",
+    "articles/project/feature-ledger.md": "feature-ledger",
+    "../project/feature-ledger.md": "feature-ledger",
+    "feature-ledger.md": "feature-ledger",
+    "doc:handoff": "handoff",
+    "doc://handoff": "handoff",
+    "articles/project/handoff.md": "handoff",
+    "../project/handoff.md": "handoff",
+    "handoff.md": "handoff",
+    "doc:jobs-queue-commands": "jobs-queue-commands",
+    "doc://jobs-queue-commands": "jobs-queue-commands",
+    "articles/project/jobs-queue-commands.md": "jobs-queue-commands",
+    "../project/jobs-queue-commands.md": "jobs-queue-commands",
+    "jobs-queue-commands.md": "jobs-queue-commands",
+    "doc:licensing-notices": "licensing-notices",
+    "doc://licensing-notices": "licensing-notices",
+    "articles/project/licensing-notices.md": "licensing-notices",
+    "../project/licensing-notices.md": "licensing-notices",
+    "licensing-notices.md": "licensing-notices",
+    "doc:privacy-security": "privacy-security",
+    "doc://privacy-security": "privacy-security",
+    "articles/project/privacy-security.md": "privacy-security",
+    "../project/privacy-security.md": "privacy-security",
+    "privacy-security.md": "privacy-security",
+    "doc:project-overview": "project-overview",
+    "doc://project-overview": "project-overview",
+    "articles/project/project-overview.md": "project-overview",
+    "../project/project-overview.md": "project-overview",
+    "project-overview.md": "project-overview",
+    "doc:roadmap": "roadmap",
+    "doc://roadmap": "roadmap",
+    "articles/project/roadmap.md": "roadmap",
+    "../project/roadmap.md": "roadmap",
+    "roadmap.md": "roadmap",
+    "doc:settings-preferences": "settings-preferences",
+    "doc://settings-preferences": "settings-preferences",
+    "articles/project/settings-preferences.md": "settings-preferences",
+    "../project/settings-preferences.md": "settings-preferences",
+    "settings-preferences.md": "settings-preferences",
+    "doc:update-release": "update-release",
+    "doc://update-release": "update-release",
+    "articles/project/update-release.md": "update-release",
+    "../project/update-release.md": "update-release",
+    "update-release.md": "update-release"
+  }
+}
+

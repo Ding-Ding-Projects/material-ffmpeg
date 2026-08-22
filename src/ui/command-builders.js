@@ -7,6 +7,7 @@
   const MAX_TOKEN_LENGTH = 8192;
   const MAX_FILTER_LENGTH = 32768;
   const MAX_COLLECTION_LENGTH = 128;
+  const MAX_COMPOSER_OPTIONS = 120;
   const FORBIDDEN_ROOT_KEYS = new Set(['bin', 'binary', 'command', 'executable', 'shell']);
   const VIDEO_CODECS = new Set(['copy', 'libx264', 'libx265', 'libsvtav1', 'libvpx-vp9', 'prores_ks', 'h264_nvenc', 'hevc_nvenc', 'av1_nvenc', 'h264_qsv', 'hevc_qsv', 'av1_qsv']);
   const AUDIO_CODECS = new Set(['copy', 'aac', 'libopus', 'libmp3lame', 'flac', 'pcm_s16le', 'pcm_s24le', 'pcm_f32le', 'vorbis']);
@@ -15,7 +16,18 @@
   const SCALERS = new Set(['fast_bilinear', 'bilinear', 'bicubic', 'experimental', 'neighbor', 'area', 'bicublin', 'gauss', 'sinc', 'lanczos', 'spline']);
   const HLS_FLAGS = new Set(['delete_segments', 'independent_segments', 'append_list', 'temp_file', 'program_date_time', 'omit_endlist', 'split_by_time', 'discont_start', 'single_file', 'round_durations']);
   const STREAM_PROTOCOLS = new Set(['rtmp:', 'rtmps:', 'srt:', 'udp:', 'tcp:', 'rtsp:']);
-  const COMPOSER_BLOCKED_OPTIONS = new Set(['-i', '-progress', '-nostdin', '-stdin', '-y', '-n', '-report', '-filter_script', '-filter_complex_script', '-vstats_file', '-passlogfile']);
+  const FILE_HANDLE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+  const COMPOSER_BLOCKED_OPTIONS = new Set([
+    '-i', '-f', '-progress', '-nostdin', '-stdin', '-y', '-n', '-report', '-vstats',
+    '-vf', '-af', '-filter', '-filter:v', '-filter:a', '-filter_complex', '-lavfi',
+    '-filter_script', '-filter_complex_script', '-attach', '-dump_attachment',
+    '-hls_segment_filename', '-hls_fmp4_init_filename', '-segment_list', '-segment_list_entry_prefix',
+    '-passlogfile', '-vstats_file', '-sdp_file', '-protocol_whitelist', '-protocol_blacklist'
+  ]);
+  const COMPOSER_OUTPUT_FORMATS = new Set(['mp4', 'matroska', 'webm', 'mov', 'mpegts', 'mp3', 'flac', 'wav', 'ogg', 'opus', 'gif', 'image2']);
+  const COMPOSER_EXECUTABLE = /^(?:ffmpeg|ffprobe|cmd|powershell|pwsh|bash|sh|zsh|wsl)(?:\.exe)?$/iu;
+  const COMPOSER_SHELL_OPERATOR = /(?:[|&;`<>]|\$\(|\$\{)/u;
+  const COMPOSER_LOCAL_PATH = /^(?:[a-z]:[\\/]|\\\\|\/|~[\\/]|\.{1,2}[\\/]|file:|[a-z][a-z0-9+.-]*:)/iu;
 
   function fail(field, message) {
     throw new TypeError(`${field}: ${message}`);
@@ -84,6 +96,12 @@
     return localPath(value, field, { allowPattern: Boolean(allowPattern) });
   }
 
+  function fileHandle(value, field) {
+    const result = token(value, field, { maxLength: 36, allowLeadingDash: false });
+    if (!FILE_HANDLE_RE.test(result)) fail(field, 'must be an opaque selected-file handle');
+    return result;
+  }
+
   function enumValue(value, fallback, values, field) {
     const result = value === undefined ? fallback : token(value, field);
     if (!values.has(result)) fail(field, `must be one of: ${[...values].join(', ')}`);
@@ -133,6 +151,11 @@
     if (/^\d+(?:\.\d{1,9})?$/u.test(result)) return result;
     const match = /^(\d{1,6}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$/u.exec(result);
     if (!match || Number(match[2]) > 59 || Number(match[3]) > 59) fail(field, 'must be seconds or HH:MM:SS[.fraction]');
+    // Keep the textual form and validate it against the same ten-year bound as
+    // numeric times. Without this check a six-digit hour value could bypass the
+    // bound and make ffmpeg accept an effectively unbounded seek or duration.
+    const seconds = (Number(match[1]) * 3600) + (Number(match[2]) * 60) + Number(match[3]) + (match[4] ? Number(`0.${match[4]}`) : 0);
+    if (!Number.isFinite(seconds) || seconds > 315360000) fail(field, 'must be at most 315360000 seconds');
     return result;
   }
 
@@ -140,6 +163,10 @@
     if (!value.includes(':')) return Number(value);
     const parts = value.split(':');
     return (Number(parts[0]) * 3600) + (Number(parts[1]) * 60) + Number(parts[2]);
+  }
+
+  function secondsText(value) {
+    return String(Math.round(value * 1_000_000_000) / 1_000_000_000);
   }
 
   function streamSelector(value, fallback, field) {
@@ -201,6 +228,7 @@
     const output = outputPath(spec.output, 'output', false);
     const videoCodec = codec(spec.videoCodec, 'libx264', VIDEO_CODECS, 'videoCodec', true);
     const audioCodec = codec(spec.audioCodec, 'aac', AUDIO_CODECS, 'audioCodec', true);
+    if (videoCodec === 'none' && audioCodec === 'none') fail('codecs', 'at least one output stream must be enabled');
     const args = commonArgs(spec);
     const hwaccel = enumValue(spec.hwaccel, 'none', new Set(['none', 'auto', 'cuda', 'qsv', 'd3d11va', 'dxva2', 'vulkan']), 'hwaccel');
     if (hwaccel !== 'none') args.push('-hwaccel', hwaccel);
@@ -256,19 +284,22 @@
   const TRIM_KEYS = new Set(['input', 'output', 'overwrite', 'progress', 'start', 'end', 'duration', 'mode', 'videoCodec', 'audioCodec', 'crf', 'preset', 'avoidNegativeTs', 'maps']);
   function trim(inputSpec) {
     const spec = object(inputSpec, 'trim', TRIM_KEYS);
-    const input = localPath(spec.input, 'input');
-    const output = outputPath(spec.output, 'output', false);
+    const input = fileHandle(spec.input, 'input');
+    const output = fileHandle(spec.output, 'output');
     const start = timeValue(spec.start, 'start', true);
     const end = timeValue(spec.end, 'end', true);
     const duration = timeValue(spec.duration, 'duration', true);
     if (end === undefined && duration === undefined) fail('trim', 'requires end or duration');
     if (end !== undefined && duration !== undefined) fail('trim', 'accepts end or duration, not both');
-    if (start !== undefined && end !== undefined && timeAsSeconds(end) <= timeAsSeconds(start)) fail('end', 'must be later than start');
+    const startSeconds = start === undefined ? 0 : timeAsSeconds(start);
+    const endSeconds = end === undefined ? undefined : timeAsSeconds(end);
+    const durationSeconds = duration === undefined ? undefined : timeAsSeconds(duration);
+    if (endSeconds !== undefined && endSeconds <= startSeconds) fail('end', 'must be later than start');
+    if (durationSeconds !== undefined && durationSeconds <= 0) fail('duration', 'must be greater than zero');
     const args = commonArgs(spec);
     if (start !== undefined) args.push('-ss', start);
     args.push('-i', input);
-    if (end !== undefined) args.push('-to', end);
-    else args.push('-t', duration);
+    args.push('-t', endSeconds === undefined ? duration : secondsText(endSeconds - startSeconds));
     addMaps(args, spec.maps);
     const mode = enumValue(spec.mode, 'copy', new Set(['copy', 'reencode']), 'mode');
     if (mode === 'copy') args.push('-c', 'copy');
@@ -285,24 +316,198 @@
     return freezeArgv(args);
   }
 
-  const FILTERGRAPH_KEYS = new Set(['input', 'output', 'overwrite', 'progress', 'start', 'duration', 'maps', 'videoGraph', 'audioGraph', 'complexGraph', 'videoCodec', 'audioCodec', 'crf', 'preset', 'audioBitrate', 'pixelFormat', 'shortest']);
+  const FILTERGRAPH_CATALOG = Object.freeze({
+    video: Object.freeze({
+      scale: Object.freeze({
+        label: 'Scale',
+        defaults: Object.freeze({ width: 1920, height: -2, flags: 'lanczos' }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'width', label: 'Width', type: 'number', min: -2, max: 32768, step: 1 }),
+          Object.freeze({ key: 'height', label: 'Height', type: 'number', min: -2, max: 32768, step: 1 }),
+          Object.freeze({ key: 'flags', label: 'Scaler', type: 'select', values: Object.freeze([...SCALERS]) }),
+        ]),
+      }),
+      crop: Object.freeze({
+        label: 'Crop',
+        defaults: Object.freeze({ width: 1280, height: 720, x: 0, y: 0 }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'width', label: 'Width', type: 'number', min: 2, max: 32768, step: 1 }),
+          Object.freeze({ key: 'height', label: 'Height', type: 'number', min: 2, max: 32768, step: 1 }),
+          Object.freeze({ key: 'x', label: 'Left offset', type: 'number', min: 0, max: 32768, step: 1 }),
+          Object.freeze({ key: 'y', label: 'Top offset', type: 'number', min: 0, max: 32768, step: 1 }),
+        ]),
+      }),
+      fps: Object.freeze({
+        label: 'Frame rate',
+        defaults: Object.freeze({ rate: '24000/1001' }),
+        fields: Object.freeze([Object.freeze({ key: 'rate', label: 'Rate', type: 'text', placeholder: '24000/1001' })]),
+      }),
+      eq: Object.freeze({
+        label: 'Picture adjustment',
+        defaults: Object.freeze({ brightness: 0, contrast: 1, saturation: 1, gamma: 1 }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'brightness', label: 'Brightness', type: 'number', min: -1, max: 1, step: 0.01 }),
+          Object.freeze({ key: 'contrast', label: 'Contrast', type: 'number', min: 0, max: 2, step: 0.01 }),
+          Object.freeze({ key: 'saturation', label: 'Saturation', type: 'number', min: 0, max: 3, step: 0.01 }),
+          Object.freeze({ key: 'gamma', label: 'Gamma', type: 'number', min: 0.1, max: 10, step: 0.01 }),
+        ]),
+      }),
+      curves: Object.freeze({
+        label: 'Color curve preset',
+        defaults: Object.freeze({ preset: 'medium_contrast' }),
+        fields: Object.freeze([Object.freeze({
+          key: 'preset', label: 'Preset', type: 'select', values: Object.freeze([
+            'color_negative', 'cross_process', 'darker', 'increase_contrast', 'lighter',
+            'linear_contrast', 'medium_contrast', 'negative', 'strong_contrast', 'vintage',
+          ]),
+        })]),
+      }),
+      drawtext: Object.freeze({
+        label: 'Text overlay',
+        defaults: Object.freeze({ text: 'Caption', fontSize: 48, x: 'center', y: 'bottom', fontColor: 'white', box: true, boxColor: 'black' }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'text', label: 'Text', type: 'text', maxLength: 200, placeholder: 'Caption' }),
+          Object.freeze({ key: 'fontSize', label: 'Font size', type: 'number', min: 8, max: 512, step: 1 }),
+          Object.freeze({ key: 'x', label: 'Horizontal position', type: 'select', values: Object.freeze(['left', 'center', 'right']) }),
+          Object.freeze({ key: 'y', label: 'Vertical position', type: 'select', values: Object.freeze(['top', 'middle', 'bottom']) }),
+          Object.freeze({ key: 'fontColor', label: 'Text color', type: 'select', values: Object.freeze(['white', 'black', 'yellow', 'red', 'green', 'blue']) }),
+          Object.freeze({ key: 'box', label: 'Background box', type: 'checkbox' }),
+          Object.freeze({ key: 'boxColor', label: 'Box color', type: 'select', values: Object.freeze(['black', 'white', 'yellow', 'red', 'green', 'blue']) }),
+        ]),
+      }),
+      unsharp: Object.freeze({
+        label: 'Sharpen or soften',
+        defaults: Object.freeze({ amount: 1, chromaAmount: 0 }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'amount', label: 'Luma amount', type: 'number', min: -2, max: 5, step: 0.1 }),
+          Object.freeze({ key: 'chromaAmount', label: 'Chroma amount', type: 'number', min: -2, max: 5, step: 0.1 }),
+        ]),
+      }),
+    }),
+    audio: Object.freeze({
+      loudnorm: Object.freeze({
+        label: 'Loudness normalization',
+        defaults: Object.freeze({ integrated: -16, lra: 11, truePeak: -1.5 }),
+        fields: Object.freeze([
+          Object.freeze({ key: 'integrated', label: 'Integrated loudness (LUFS)', type: 'number', min: -70, max: -5, step: 0.1 }),
+          Object.freeze({ key: 'lra', label: 'Loudness range', type: 'number', min: 1, max: 50, step: 0.1 }),
+          Object.freeze({ key: 'truePeak', label: 'True peak (dBTP)', type: 'number', min: -9, max: 0, step: 0.1 }),
+        ]),
+      }),
+      atempo: Object.freeze({
+        label: 'Tempo',
+        defaults: Object.freeze({ tempo: 1 }),
+        fields: Object.freeze([Object.freeze({ key: 'tempo', label: 'Tempo multiplier', type: 'number', min: 0.5, max: 100, step: 0.01 })]),
+      }),
+    }),
+  });
+
+  const FILTERGRAPH_NODE_KEYS = new Set(['kind', 'name', 'options']);
+  const FILTERGRAPH_OPTION_KEYS = Object.freeze({
+    scale: new Set(['width', 'height', 'flags']),
+    crop: new Set(['width', 'height', 'x', 'y']),
+    fps: new Set(['rate']),
+    eq: new Set(['brightness', 'contrast', 'saturation', 'gamma']),
+    curves: new Set(['preset']),
+    drawtext: new Set(['text', 'fontSize', 'x', 'y', 'fontColor', 'box', 'boxColor']),
+    unsharp: new Set(['amount', 'chromaAmount']),
+    loudnorm: new Set(['integrated', 'lra', 'truePeak']),
+    atempo: new Set(['tempo']),
+  });
+  const FILTERGRAPH_CURVE_PRESETS = new Set(FILTERGRAPH_CATALOG.video.curves.fields[0].values);
+  const FILTERGRAPH_COLORS = new Set(['white', 'black', 'yellow', 'red', 'green', 'blue']);
+
+  function filtergraphDimension(value, field) {
+    if (value === -1 || value === -2) return value;
+    return number(value, undefined, 2, 32768, field, true);
+  }
+
+  function filtergraphText(value, field) {
+    const result = token(value, field, { maxLength: 200, allowLeadingDash: true });
+    if (!/^[\p{L}\p{N} .!?()_+\-]{1,200}$/u.test(result)) {
+      fail(field, 'may contain letters, numbers, spaces, and . ! ? ( ) _ + - only');
+    }
+    return result;
+  }
+
+  function compileFiltergraphNode(value, index) {
+    const field = `nodes[${index}]`;
+    const node = object(value, field, FILTERGRAPH_NODE_KEYS);
+    const kind = enumValue(node.kind, undefined, new Set(['video', 'audio']), `${field}.kind`);
+    const definitions = FILTERGRAPH_CATALOG[kind];
+    const name = enumValue(node.name, undefined, new Set(Object.keys(definitions)), `${field}.name`);
+    const options = object(node.options, `${field}.options`, FILTERGRAPH_OPTION_KEYS[name]);
+    let expression;
+
+    if (name === 'scale') {
+      const width = filtergraphDimension(options.width, `${field}.options.width`);
+      const height = filtergraphDimension(options.height, `${field}.options.height`);
+      const flags = enumValue(options.flags, undefined, SCALERS, `${field}.options.flags`);
+      expression = `scale=${width}:${height}:flags=${flags}`;
+    } else if (name === 'crop') {
+      const width = requiredNumber(options.width, 2, 32768, `${field}.options.width`, true);
+      const height = requiredNumber(options.height, 2, 32768, `${field}.options.height`, true);
+      const x = requiredNumber(options.x, 0, 32768, `${field}.options.x`, true);
+      const y = requiredNumber(options.y, 0, 32768, `${field}.options.y`, true);
+      expression = `crop=${width}:${height}:${x}:${y}`;
+    } else if (name === 'fps') {
+      expression = `fps=${rational(options.rate, undefined, `${field}.options.rate`)}`;
+    } else if (name === 'eq') {
+      const brightness = requiredNumber(options.brightness, -1, 1, `${field}.options.brightness`, false);
+      const contrast = requiredNumber(options.contrast, 0, 2, `${field}.options.contrast`, false);
+      const saturation = requiredNumber(options.saturation, 0, 3, `${field}.options.saturation`, false);
+      const gamma = requiredNumber(options.gamma, 0.1, 10, `${field}.options.gamma`, false);
+      expression = `eq=brightness=${brightness}:contrast=${contrast}:saturation=${saturation}:gamma=${gamma}`;
+    } else if (name === 'curves') {
+      expression = `curves=preset=${enumValue(options.preset, undefined, FILTERGRAPH_CURVE_PRESETS, `${field}.options.preset`)}`;
+    } else if (name === 'drawtext') {
+      const x = enumValue(options.x, undefined, new Set(['left', 'center', 'right']), `${field}.options.x`);
+      const y = enumValue(options.y, undefined, new Set(['top', 'middle', 'bottom']), `${field}.options.y`);
+      const xValue = { left: '10', center: '(w-text_w)/2', right: 'w-text_w-10' }[x];
+      const yValue = { top: '10', middle: '(h-text_h)/2', bottom: 'h-text_h-10' }[y];
+      const fontColor = enumValue(options.fontColor, undefined, FILTERGRAPH_COLORS, `${field}.options.fontColor`);
+      const boxColor = enumValue(options.boxColor, undefined, FILTERGRAPH_COLORS, `${field}.options.boxColor`);
+      const box = boolean(options.box, true, `${field}.options.box`);
+      expression = `drawtext=text='${filtergraphText(options.text, `${field}.options.text`)}':fontsize=${requiredNumber(options.fontSize, 8, 512, `${field}.options.fontSize`, true)}:fontcolor=${fontColor}:x=${xValue}:y=${yValue}:box=${box ? 1 : 0}:boxcolor=${boxColor}@0.75`;
+    } else if (name === 'unsharp') {
+      const amount = requiredNumber(options.amount, -2, 5, `${field}.options.amount`, false);
+      const chromaAmount = requiredNumber(options.chromaAmount, -2, 5, `${field}.options.chromaAmount`, false);
+      expression = `unsharp=5:5:${amount}:5:5:${chromaAmount}`;
+    } else if (name === 'loudnorm') {
+      const integrated = requiredNumber(options.integrated, -70, -5, `${field}.options.integrated`, false);
+      const lra = requiredNumber(options.lra, 1, 50, `${field}.options.lra`, false);
+      const truePeak = requiredNumber(options.truePeak, -9, 0, `${field}.options.truePeak`, false);
+      expression = `loudnorm=I=${integrated}:LRA=${lra}:TP=${truePeak}`;
+    } else if (name === 'atempo') {
+      expression = `atempo=${requiredNumber(options.tempo, 0.5, 100, `${field}.options.tempo`, false)}`;
+    }
+
+    return { kind, expression };
+  }
+
+  function compileFiltergraphNodes(value) {
+    if (!Array.isArray(value) || value.length === 0 || value.length > 64) fail('nodes', 'must contain between 1 and 64 ordered filter nodes');
+    return value.map(compileFiltergraphNode);
+  }
+
+  const FILTERGRAPH_KEYS = new Set(['input', 'output', 'overwrite', 'progress', 'start', 'duration', 'maps', 'nodes', 'videoCodec', 'audioCodec', 'crf', 'preset', 'audioBitrate', 'pixelFormat', 'shortest']);
   function filtergraph(inputSpec) {
     const spec = object(inputSpec, 'filtergraph', FILTERGRAPH_KEYS);
-    const graphCount = [spec.videoGraph, spec.audioGraph, spec.complexGraph].filter((entry) => entry !== undefined).length;
-    if (!graphCount) fail('filtergraph', 'requires videoGraph, audioGraph, or complexGraph');
-    if (spec.complexGraph !== undefined && (spec.videoGraph !== undefined || spec.audioGraph !== undefined)) fail('filtergraph', 'complexGraph cannot be combined with videoGraph or audioGraph');
+    const nodes = compileFiltergraphNodes(spec.nodes);
+    const videoGraph = nodes.filter((node) => node.kind === 'video').map((node) => node.expression).join(',');
+    const audioGraph = nodes.filter((node) => node.kind === 'audio').map((node) => node.expression).join(',');
     const args = commonArgs(spec);
     addTimingBeforeInput(args, spec);
     args.push('-i', localPath(spec.input, 'input'));
     addTimingAfterInput(args, spec);
-    if (spec.complexGraph !== undefined) args.push('-filter_complex', filter(spec.complexGraph, 'complexGraph'));
-    if (spec.videoGraph !== undefined) args.push('-vf', filter(spec.videoGraph, 'videoGraph'));
-    if (spec.audioGraph !== undefined) args.push('-af', filter(spec.audioGraph, 'audioGraph'));
+    if (videoGraph) args.push('-vf', videoGraph);
+    if (audioGraph) args.push('-af', audioGraph);
     addMaps(args, spec.maps);
     const videoCodec = codec(spec.videoCodec, 'libx264', VIDEO_CODECS, 'videoCodec', true);
     const audioCodec = codec(spec.audioCodec, 'aac', AUDIO_CODECS, 'audioCodec', true);
-    if (videoCodec === 'copy' && (spec.videoGraph !== undefined || spec.complexGraph !== undefined)) fail('videoCodec', 'cannot copy video while applying a video or complex filtergraph');
-    if (audioCodec === 'copy' && (spec.audioGraph !== undefined || spec.complexGraph !== undefined)) fail('audioCodec', 'cannot copy audio while applying an audio or complex filtergraph');
+    if (videoCodec === 'none' && audioCodec === 'none') fail('codecs', 'at least one output stream must be enabled');
+    if (videoCodec === 'copy' && videoGraph) fail('videoCodec', 'cannot copy video while applying video filter nodes');
+    if (audioCodec === 'copy' && audioGraph) fail('audioCodec', 'cannot copy audio while applying audio filter nodes');
     if (videoCodec === 'none') args.push('-vn');
     else args.push('-c:v', videoCodec);
     if (audioCodec === 'none') args.push('-an');
@@ -362,6 +567,7 @@
     args.push('-map', streamSelector(spec.stream, '0:a:0', 'stream'), '-vn', '-sn', '-dn');
     args.push('-af', loudnormFilter(spec, phase === 'apply' ? spec.measurements : null, 'summary'));
     const audioCodec = codec(spec.audioCodec, 'aac', AUDIO_CODECS, 'audioCodec', false);
+    if (audioCodec === 'copy') fail('audioCodec', 'cannot use stream copy while applying loudnorm');
     args.push('-c:a', audioCodec);
     if (spec.audioBitrate !== undefined && audioCodec !== 'copy') args.push('-b:a', bitrate(spec.audioBitrate, undefined, 'audioBitrate'));
     if (spec.sampleRate !== undefined) args.push('-ar', String(number(spec.sampleRate, undefined, 8000, 384000, 'sampleRate', true)));
@@ -415,7 +621,12 @@
     const statsMode = enumValue(spec.statsMode, 'full', new Set(['full', 'diff', 'single']), 'statsMode');
     const dither = enumValue(spec.dither, 'sierra2_4a', new Set(['none', 'bayer', 'heckbert', 'floyd_steinberg', 'sierra2', 'sierra2_4a']), 'dither');
     const bayerScale = number(spec.bayerScale, 2, 0, 5, 'bayerScale', true);
-    const paletteUse = dither === 'bayer' ? `paletteuse=dither=bayer:bayer_scale=${bayerScale}` : `paletteuse=dither=${dither}`;
+    const paletteUseOptions = [
+      `dither=${dither}`,
+      dither === 'bayer' ? `bayer_scale=${bayerScale}` : '',
+      statsMode === 'single' ? 'new=1' : ''
+    ].filter(Boolean).join(':');
+    const paletteUse = `paletteuse=${paletteUseOptions}`;
     const graph = `fps=${fps},scale=${width}:${height}:flags=${scaler},split[v0][v1];[v0]palettegen=max_colors=${maxColors}:stats_mode=${statsMode}[p];[v1][p]${paletteUse}`;
     args.push('-filter_complex', graph, '-loop', String(number(spec.loop, 0, -1, 65535, 'loop', true)));
     args.push(outputPath(spec.output, 'output', false));
@@ -426,13 +637,15 @@
   function thumbnails(inputSpec) {
     const spec = object(inputSpec, 'thumbnails', THUMBNAIL_KEYS);
     const outputPattern = outputPath(spec.outputPattern, 'outputPattern', true);
-    const count = spec.count === undefined ? undefined : number(spec.count, undefined, 1, 1000000, 'count', true);
+    const requestedCount = spec.count === undefined ? undefined : number(spec.count, undefined, 1, 1000000, 'count', true);
+    const mode = enumValue(spec.mode, 'interval', new Set(['single', 'interval', 'iframes', 'thumbnail', 'fps']), 'mode');
+    if (mode === 'single' && requestedCount !== undefined && requestedCount !== 1) fail('count', 'must be 1 in single-frame mode');
+    const count = mode === 'single' ? 1 : requestedCount;
     if (count !== 1 && !/%(?:\d+)?d/u.test(outputPattern)) fail('outputPattern', 'must include a %d sequence placeholder when producing multiple files');
     const args = commonArgs(spec);
     addTimingBeforeInput(args, spec);
     args.push('-i', localPath(spec.input, 'input'));
     addTimingAfterInput(args, spec);
-    const mode = enumValue(spec.mode, 'interval', new Set(['interval', 'iframes', 'thumbnail', 'fps']), 'mode');
     const filters = [];
     if (mode === 'interval') filters.push(`fps=1/${number(spec.intervalSeconds, 60, 0.001, 86400, 'intervalSeconds', false)}`);
     if (mode === 'iframes') filters.push("select='eq(pict_type\\,I)'");
@@ -441,19 +654,24 @@
     if (spec.width !== undefined || spec.height !== undefined) {
       filters.push(`scale=${dimension(spec.width, -2, 'width')}:${dimension(spec.height, -2, 'height')}:flags=${enumValue(spec.scaler, 'lanczos', SCALERS, 'scaler')}`);
     }
-    args.push('-vf', filters.join(','), '-vsync', 'vfr');
+    if (filters.length) args.push('-vf', filters.join(','));
+    args.push('-vsync', 'vfr');
     if (count !== undefined) args.push('-frames:v', String(count));
     if (spec.quality !== undefined) args.push('-q:v', String(number(spec.quality, undefined, 1, 31, 'quality', true)));
     args.push(outputPattern);
     return freezeArgv(args);
   }
 
-  const HLS_KEYS = new Set(['input', 'output', 'overwrite', 'progress', 'start', 'duration', 'hlsTime', 'listSize', 'segmentType', 'flags', 'segmentFilename', 'masterPlaylist', 'initFilename', 'videoCodec', 'audioCodec', 'videoBitrate', 'audioBitrate', 'crf', 'preset', 'gop', 'fps', 'width', 'height', 'scaler', 'variants']);
+  const HLS_KEYS = new Set(['input', 'output', 'overwrite', 'progress', 'start', 'duration', 'hlsTime', 'listSize', 'playlistType', 'segmentType', 'flags', 'segmentFilename', 'masterPlaylist', 'initFilename', 'videoCodec', 'audioCodec', 'videoBitrate', 'audioBitrate', 'crf', 'preset', 'gop', 'fps', 'width', 'height', 'scaler', 'variants']);
   const HLS_VARIANT_KEYS = new Set(['name', 'width', 'height', 'videoCodec', 'audioCodec', 'videoBitrate', 'audioBitrate', 'maxRate', 'bufferSize', 'crf', 'preset', 'fps']);
   function appendHlsOptions(args, spec, hasVariants) {
     args.push('-f', 'hls');
     args.push('-hls_time', String(number(spec.hlsTime, 6, 0.1, 86400, 'hlsTime', false)));
-    args.push('-hls_list_size', String(number(spec.listSize, 0, 0, 1000000, 'listSize', true)));
+    const listSize = number(spec.listSize, 0, 0, 1000000, 'listSize', true);
+    const playlistType = enumValue(spec.playlistType, 'live', new Set(['live', 'event', 'vod']), 'playlistType');
+    if (playlistType !== 'live' && listSize !== 0) fail('listSize', 'must be 0 for event or VOD playlists');
+    args.push('-hls_list_size', String(listSize));
+    if (playlistType !== 'live') args.push('-hls_playlist_type', playlistType);
     args.push('-hls_segment_type', enumValue(spec.segmentType, 'mpegts', new Set(['mpegts', 'fmp4']), 'segmentType'));
     const flags = uniqueStrings(spec.flags, 'flags', HLS_FLAGS, HLS_FLAGS.size);
     if (flags.length) args.push('-hls_flags', flags.join('+'));
@@ -542,13 +760,20 @@
     return freezeArgv(args);
   }
 
-  const STREAM_KEYS = new Set(['input', 'target', 'overwrite', 'progress', 'start', 'duration', 'format', 'videoCodec', 'audioCodec', 'videoBitrate', 'audioBitrate', 'crf', 'preset', 'gop', 'fps', 'width', 'height', 'scaler', 'realtime', 'lowLatency']);
+  const STREAM_KEYS = new Set(['input', 'target', 'mode', 'overwrite', 'progress', 'start', 'duration', 'format', 'videoCodec', 'audioCodec', 'videoBitrate', 'audioBitrate', 'crf', 'preset', 'gop', 'fps', 'width', 'height', 'scaler', 'realtime', 'lowLatency']);
   function stream(inputSpec) {
     const spec = object(inputSpec, 'stream', STREAM_KEYS);
     const target = token(spec.target, 'target', { allowLeadingDash: false, maxLength: MAX_PATH_LENGTH });
     let url;
     try { url = new URL(target); } catch { fail('target', 'must be an absolute streaming URL'); }
     if (!STREAM_PROTOCOLS.has(url.protocol)) fail('target', `protocol ${url.protocol || '(none)'} is not supported`);
+    const mode = spec.mode === undefined ? undefined : enumValue(spec.mode, undefined, new Set(['rtmp', 'srt']), 'mode');
+    if (mode === 'rtmp' && !['rtmp:', 'rtmps:'].includes(url.protocol)) fail('target', 'must use rtmp:// or rtmps:// in RTMP mode');
+    if (mode === 'srt' && url.protocol !== 'srt:') fail('target', 'must use srt:// in SRT mode');
+    if (!url.hostname) fail('target', 'must include a host');
+    if (mode === 'srt' && !url.port) fail('target', 'must include a port in SRT mode');
+    if (mode === 'rtmp' && url.pathname.split('/').filter(Boolean).length > 1) fail('target', 'must not include a stream key; enter the server application endpoint only');
+    if (url.hash) fail('target', 'must not include a fragment');
     if (url.username || url.password) fail('target', 'must not embed credentials');
     for (const name of url.searchParams.keys()) {
       if (/^(?:passphrase|password|token|key)$/iu.test(name)) fail('target', 'must not embed secret query parameters');
@@ -566,14 +791,27 @@
     if (boolean(spec.lowLatency, false, 'lowLatency')) args.push('-tune', 'zerolatency', '-fflags', 'nobuffer');
     const inferredFormat = ['rtmp:', 'rtmps:'].includes(url.protocol) ? 'flv' : url.protocol === 'rtsp:' ? 'rtsp' : 'mpegts';
     const format = enumValue(spec.format, inferredFormat, new Set(['flv', 'mpegts', 'rtsp']), 'format');
+    if (mode === 'rtmp' && format !== 'flv') fail('format', 'must be flv in RTMP mode');
+    if (mode === 'srt' && format !== 'mpegts') fail('format', 'must be mpegts in SRT mode');
     args.push('-f', format, target);
     return freezeArgv(args);
   }
 
   const OPTION_KEYS = new Set(['name', 'value']);
   const COMPOSER_INPUT_KEYS = new Set(['source', 'options']);
-  const COMPOSER_OUTPUT_KEYS = new Set(['target', 'options']);
+  const COMPOSER_OUTPUT_KEYS = new Set(['target', 'format', 'options']);
   const COMPOSER_KEYS = new Set(['overwrite', 'progress', 'globalOptions', 'inputs', 'outputs']);
+  function composerValue(value, field) {
+    const result = token(value, field);
+    if (COMPOSER_EXECUTABLE.test(result)) fail(field, 'must not name an executable');
+    if (COMPOSER_SHELL_OPERATOR.test(result)) fail(field, 'contains a shell operator');
+    if (COMPOSER_LOCAL_PATH.test(result) || result.startsWith('@') ||
+      /(?:^|[=,:])[^=,:\s]+\.[a-z][a-z0-9]{0,11}(?:$|[,;])/iu.test(result)) {
+      fail(field, 'must not contain a local path, protocol target, response file, or path-reading filter');
+    }
+    return result;
+  }
+
   function appendStructuredOptions(args, entries, field) {
     if (entries === undefined) return;
     if (!Array.isArray(entries) || entries.length > MAX_COLLECTION_LENGTH) fail(field, `must be an array of at most ${MAX_COLLECTION_LENGTH} option entries`);
@@ -581,12 +819,12 @@
       const option = object(entry, `${field}[${index}]`, OPTION_KEYS);
       const name = token(option.name, `${field}[${index}].name`);
       if (!/^-{1,2}[A-Za-z0-9][A-Za-z0-9_.:+-]{0,127}$/u.test(name)) fail(`${field}[${index}].name`, 'must be one FFmpeg option name');
-      if (COMPOSER_BLOCKED_OPTIONS.has(name)) fail(`${field}[${index}].name`, 'is managed by the runtime and cannot be overridden');
+      if (COMPOSER_BLOCKED_OPTIONS.has(name.toLocaleLowerCase('en-US'))) fail(`${field}[${index}].name`, 'is managed by the runtime or can read or write an unmanaged path');
       if (option.value === false || option.value === undefined || option.value === null) return;
       args.push(name);
       if (option.value !== true) {
         if (Array.isArray(option.value) || isPlainObject(option.value)) fail(`${field}[${index}].value`, 'must be a scalar token');
-        args.push(token(option.value, `${field}[${index}].value`));
+        args.push(composerValue(option.value, `${field}[${index}].value`));
       }
     });
   }
@@ -600,18 +838,23 @@
     spec.inputs.forEach((entry, index) => {
       const input = object(entry, `inputs[${index}]`, COMPOSER_INPUT_KEYS);
       appendStructuredOptions(args, input.options, `inputs[${index}].options`);
-      args.push('-i', localPath(input.source, `inputs[${index}].source`));
+      args.push('-i', fileHandle(input.source, `inputs[${index}].source`));
     });
     const destinations = new Set();
     spec.outputs.forEach((entry, index) => {
       const output = object(entry, `outputs[${index}]`, COMPOSER_OUTPUT_KEYS);
       appendStructuredOptions(args, output.options, `outputs[${index}].options`);
-      const destination = outputPath(output.target, `outputs[${index}].target`, true);
+      const destination = fileHandle(output.target, `outputs[${index}].target`);
       const key = destination.toLocaleLowerCase('en-US');
       if (destinations.has(key)) fail(`outputs[${index}].target`, 'duplicates another output');
       destinations.add(key);
-      args.push(destination);
+      args.push('-f', enumValue(output.format, 'mp4', COMPOSER_OUTPUT_FORMATS, `outputs[${index}].format`), destination);
     });
+    const optionCount = (spec.globalOptions?.length || 0) +
+      spec.inputs.reduce((count, input) => count + (input.options?.length || 0), 0) +
+      spec.outputs.reduce((count, output) => count + (output.options?.length || 0), 0);
+    if (optionCount > MAX_COMPOSER_OPTIONS) fail('composer', `must contain at most ${MAX_COMPOSER_OPTIONS} option rows across all scopes`);
+    if (args.length > 256) fail('composer', 'produces more than 256 arguments after managed input and output arguments are added');
     return freezeArgv(args);
   }
 
@@ -698,6 +941,7 @@
   const api = Object.freeze({
     version: API_VERSION,
     adapters: ADAPTERS,
+    filtergraphCatalog: FILTERGRAPH_CATALOG,
     build,
     convert,
     trim,
@@ -714,7 +958,8 @@
     converter,
   });
 
-  Object.defineProperty(root, 'FFmpegCommandBuilders', {
+  if (typeof module === 'object' && module && module.exports) module.exports = api;
+  else Object.defineProperty(root, 'FFmpegCommandBuilders', {
     configurable: false,
     enumerable: true,
     writable: false,

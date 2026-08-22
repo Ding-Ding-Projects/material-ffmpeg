@@ -7,9 +7,69 @@
     "working": "Every declared implementation and document exists, and an exact-commit receipt records a successful real interaction plus its evidence.",
     "failed": "A declared implementation or document is missing, a real interaction failed, or its receipt is malformed or belongs to another commit.",
     "unrun": "Declarations exist but the real interaction has not produced an exact-commit receipt.",
+    "not-integrated": "The required desktop bridge or user-facing surface is not connected in the packaged application.",
     "not-applicable": "A receipt names the exact technical boundary and the closest shipped equivalent. This is never inferred automatically."
   },
   "failClosed": true,
+  "exactSourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+  "currentEvidence": {
+    "working": [
+      {
+        "feature": "Packaged application launch",
+        "evidence": "The packaged executable launched on the isolated headless desktop at the exact source commit."
+      },
+      {
+        "feature": "Bundled runtime detection",
+        "evidence": "The packaged application resolved bundled FFmpeg 9.0.1 and FFprobe 9.0.1."
+      },
+      {
+        "feature": "Local icon rendering",
+        "evidence": "The packaged renderer displayed the bundled local icon font without literal ligature text."
+      },
+      {
+        "feature": "Convert",
+        "evidence": "A real conversion used native file dialogs, opaque file handles, structured arguments, the trusted runtime boundary, and the bundled FFmpeg executable."
+      },
+      {
+        "feature": "Queue completion, logs, and output validation",
+        "evidence": "The conversion completed through the runtime queue, reported progress and logs, and validated a non-empty H.264/AAC output."
+      },
+      {
+        "feature": "Inspector",
+        "evidence": "FFprobe inspected a real H.264 320x180 video with AAC 48 kHz mono audio and rendered the returned metadata."
+      },
+      {
+        "feature": "Codecs catalog",
+        "evidence": "The live bundled-runtime codecs catalog loaded 539 entries."
+      }
+    ],
+    "unrun": [
+      "Trim",
+      "Filtergraph",
+      "Audio extraction",
+      "Two-pass loudness normalization",
+      "GIF creation",
+      "Thumbnail generation",
+      "HLS output",
+      "RTMP and SRT transport",
+      "Command composer",
+      "Batch converter",
+      "Queue pause, resume, cancel, reorder, and clear",
+      "Runtime catalog kinds other than codecs",
+      "Component help",
+      "JSON, CSV, and XML export"
+    ],
+    "notIntegrated": [
+      "Desktop offline documentation browser main/preload/renderer bridges",
+      "Desktop Ollama service and user-interface bridges",
+      "Universal feature contract completeness"
+    ],
+    "explicitlyNotRun": [
+      "Lint suites",
+      "Test suites"
+    ],
+    "releaseProof": "No release verdict is asserted by this ledger."
+  },
   "knownExternalLimitations": [
     {
       "featureId": "repository-social-preview-upload",

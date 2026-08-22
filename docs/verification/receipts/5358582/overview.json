@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "ffmpeg-gui-overview-5358582",
+  "sourceCommit": "5358582f13b6af418e58c1971747b270d308f34b",
+  "route": "lowlevel-computer-use-cheap",
+  "artifactSha256": "95d1b2349891d01e17fa1bcc5e9b24bf7a87f9f8c6aa915b8bc6ab838df7052a",
+  "artifactSigned": false,
+  "capturePath": "docs/captures/5358582/overview.png",
+  "captureSha256": "0e175c4bddff7edd4b8bdb00793c7a00da9d1f4e5e85bfb64309faef6ac6105a",
+  "capturedAt": "2026-08-21T08:02:23.388Z",
+  "dimensions": { "width": 2160, "height": 1350, "scale": 1 },
+  "theme": "dark",
+  "screen": "overview",
+  "state": "bundled-runtime-ready",
+  "interactionProofId": "packaged-overview-runtime",
+  "interactionReceiptSha256": "1f4cc1d7bcbffac6398aed2ffa74eae8e3b1a827c0d65bb04dcc127d03a6759f",
+  "inspectionStatus": "inspected",
+  "privacy": { "visibleDesktopUntouched": true, "expectedSurfaceOnly": true, "sensitiveDataReviewed": true },
+  "proves": ["packaged launch", "bundled FFmpeg 9.0.1 status", "bundled FFprobe 9.0.1 status", "local icon rendering"],
+  "doesNotProve": ["every workflow action", "installer execution", "accessibility", "release publication"]
+}

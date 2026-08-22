@@ -1,6 +1,16 @@
 {
   "schemaVersion": 1,
-  "generatedFrom": "repository state at e1fd7aac6a0cd1a033a925cda9a5054124a30e25",
-  "verificationBoundary": "No GitHub release was published when this record was written. The first verified installer and immutable release URL remain pending.",
-  "releases": []
+  "generatedFrom": "verified release evidence baseline at aeec0e4460ac4ab27d7e9e49ab5f9478692a4871",
+  "verificationBoundary": "Release v0.1.502-r1 is verified as a non-draft release targeting the recorded commit with the required unsigned Squirrel.Windows assets. Packaged UI interaction evidence is separate and limited to the archive context-menu and search repair described in the project records.",
+  "releases": [
+    {
+      "version": "v0.1.502-r1",
+      "status": "verified non-draft release",
+      "commit": "aeec0e4460ac4ab27d7e9e49ab5f9478692a4871",
+      "publishedAt": "2026-08-21T18:20:24Z",
+      "url": "https://github.com/Ding-Ding-Projects/material-ffmpeg/releases/tag/v0.1.502-r1",
+      "installer": "https://github.com/Ding-Ding-Projects/material-ffmpeg/releases/download/v0.1.502-r1/material-ffmpeg-setup-0.1.502.exe",
+      "installerSha256": "e738ddc9f03a4b4ed29135168427440766b1114e98916e04eb2623d11a56e5e7"
+    }
+  ]
 }

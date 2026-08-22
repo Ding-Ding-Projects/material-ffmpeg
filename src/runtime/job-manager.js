@@ -8,13 +8,16 @@ const { spawn } = require('child_process');
 const { createProgressParser } = require('./ffmpeg-parsers');
 const { compileJobArgs } = require('./safe-process');
 
-const STATUSES = new Set(['queued', 'running', 'paused', 'completed', 'failed', 'cancelled', 'interrupted']);
+const STATUSES = new Set(['queued', 'running', 'paused', 'cancelling', 'stopping', 'completed', 'failed', 'cancelled', 'interrupted']);
 const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const MAX_JOBS = 1000;
 const MAX_HISTORY = 500;
 const MAX_LOG_LINES = 500;
 const MAX_LOG_LENGTH = 4000;
 const MAX_LABEL_LENGTH = 160;
+const MAX_OUTPUT_PATHS = 256;
+const MAX_OUTPUT_DIRECTORY_ENTRIES = 10_000;
+const MAX_VALIDATED_OUTPUTS = 2_000;
 const CANCEL_GRACE_MS = 2500;
 
 class JobManager extends EventEmitter {
@@ -27,8 +30,11 @@ class JobManager extends EventEmitter {
     this.jobs = new Map();
     this.order = [];
     this.processes = new Map();
+    this._stopReasons = new Map();
+    this._stopTimers = new Map();
     this._persistTimer = null;
     this._shuttingDown = false;
+    this._shutdownPromise = null;
   }
 
   initialize() {
@@ -38,12 +44,14 @@ class JobManager extends EventEmitter {
   }
 
   enqueue(spec) {
+    if (this._shuttingDown) throw new Error('The job queue is shutting down and cannot accept new work.');
     if (this.jobs.size >= MAX_JOBS) throw new Error(`The queue is limited to ${MAX_JOBS} retained jobs.`);
     const args = compileJobArgs(spec, this.fileRegistry);
-    const outputPaths = spec.args
+    const outputPaths = [...new Set(spec.args
       .filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry) &&
         this.fileRegistry.describe(entry.fileHandle).kind === 'output')
-      .map((entry) => this.fileRegistry.resolve(entry.fileHandle, 'output'));
+      .map((entry) => this.fileRegistry.resolve(entry.fileHandle, 'output')))];
+    if (outputPaths.length > MAX_OUTPUT_PATHS) throw new Error(`A job can declare at most ${MAX_OUTPUT_PATHS} output paths.`);
     const now = new Date().toISOString();
     const job = {
       id: randomUUID(),
@@ -65,13 +73,29 @@ class JobManager extends EventEmitter {
     };
     this.jobs.set(job.id, job);
     this.order.push(job.id);
-    this._changed(job, 'created', true);
+    try {
+      this._changed(job, 'created', true);
+    } catch (error) {
+      this.jobs.delete(job.id);
+      this.order = this.order.filter((id) => id !== job.id);
+      throw error;
+    }
     this._schedule();
     return this._publicJob(job);
   }
 
   list() {
     return this.order.map((id) => this.jobs.get(id)).filter(Boolean).map((job) => this._publicJob(job));
+  }
+
+  setConcurrency(value) {
+    if (!Number.isInteger(value) || value < 1 || value > 4) {
+      throw new TypeError('Job concurrency must be an integer from 1 through 4.');
+    }
+    this.concurrency = value;
+    this._schedule();
+    this.emit('event', { type: 'concurrency-changed', concurrency: this.concurrency });
+    return this.concurrency;
   }
 
   async pause(id) {
@@ -106,23 +130,20 @@ class JobManager extends EventEmitter {
     }
 
     const child = this.processes.get(id);
+    if (job.cancelRequested || job.status === 'cancelling') return this._publicJob(job);
+    const wasPaused = job.status === 'paused';
     job.cancelRequested = true;
+    job.status = 'cancelling';
     job.updatedAt = new Date().toISOString();
-    if (job.status === 'paused' && child?.pid) {
-      await setWindowsProcessSuspended(child.pid, false);
-      job.status = 'running';
-    }
     this._changed(job, 'cancellation-requested', true);
     if (!child) {
       this._finish(job, 'cancelled', null, null, null);
+      this._schedule();
       return this._publicJob(job);
     }
 
-    try { child.stdin?.write('q\n'); } catch (_) { /* Fall through to the bounded kill timer. */ }
-    const timer = setTimeout(() => {
-      if (this.processes.get(id) === child) child.kill('SIGKILL');
-    }, CANCEL_GRACE_MS);
-    timer.unref?.();
+    this._stopReasons.set(id, { status: 'cancelled', error: null });
+    await this._requestGracefulStop(job, child, { resumePaused: wasPaused, keepAlive: false });
     return this._publicJob(job);
   }
 
@@ -132,11 +153,17 @@ class JobManager extends EventEmitter {
     }
     if (ids.some((id) => !this.jobs.has(id))) throw new Error('Reorder contains an unknown job id.');
 
-    const queuedPositions = this.order.filter((id) => this.jobs.get(id)?.status === 'queued');
-    const requestedQueued = ids.filter((id) => this.jobs.get(id)?.status === 'queued');
-    if (requestedQueued.length !== queuedPositions.length) throw new Error('Running and completed jobs cannot be reordered.');
-    let queuedIndex = 0;
-    this.order = this.order.map((id) => this.jobs.get(id)?.status === 'queued' ? requestedQueued[queuedIndex++] : id);
+    for (let index = 0; index < this.order.length; index += 1) {
+      const currentId = this.order[index];
+      const requestedId = ids[index];
+      if (this.jobs.get(currentId)?.status !== 'queued' && requestedId !== currentId) {
+        throw new Error('Running and completed jobs must remain in their current positions.');
+      }
+      if (this.jobs.get(currentId)?.status === 'queued' && this.jobs.get(requestedId)?.status !== 'queued') {
+        throw new Error('Only queued jobs can move into queued positions.');
+      }
+    }
+    this.order = [...ids];
     this._persistNow();
     this.emit('event', { type: 'reordered', jobs: this.list() });
     return this.list();
@@ -157,24 +184,43 @@ class JobManager extends EventEmitter {
   }
 
   shutdown() {
+    if (this._shutdownPromise) return this._shutdownPromise;
     this._shuttingDown = true;
+    if (this._persistTimer) {
+      clearTimeout(this._persistTimer);
+      this._persistTimer = null;
+    }
+    const stops = [];
     for (const [id, child] of this.processes.entries()) {
       const job = this.jobs.get(id);
-      if (job && (job.status === 'running' || job.status === 'paused')) {
-        job.status = 'interrupted';
-        job.error = 'The application closed before this job finished.';
+      if (job && (job.status === 'running' || job.status === 'paused' || job.status === 'cancelling')) {
+        const wasPaused = job.status === 'paused';
+        job.status = 'stopping';
+        job.error = 'The application is closing; FFmpeg is stopping.';
         job.updatedAt = new Date().toISOString();
-        job.finishedAt = job.updatedAt;
+        job.finishedAt = null;
+        job.cancelRequested = false;
+        this._stopReasons.set(id, {
+          status: 'interrupted',
+          error: 'The application closed before this job finished.'
+        });
+        this._changed(job, 'shutdown-requested', true);
+        const exited = new Promise((resolve) => child.once('close', resolve));
+        stops.push(Promise.resolve(this._requestGracefulStop(job, child, {
+          resumePaused: wasPaused,
+          keepAlive: true
+        })).then(() => exited));
       }
-      try { child.kill('SIGKILL'); } catch (_) { /* Process is already gone. */ }
     }
-    this.processes.clear();
     this._persistNow();
+    this._shutdownPromise = Promise.allSettled(stops).then(() => undefined);
+    return this._shutdownPromise;
   }
 
   _schedule() {
     if (this._shuttingDown) return;
-    const active = [...this.jobs.values()].filter((job) => job.status === 'running' || job.status === 'paused').length;
+    const active = [...this.jobs.values()].filter((job) =>
+      job.status === 'running' || job.status === 'paused' || job.status === 'cancelling' || job.status === 'stopping').length;
     let available = this.concurrency - active;
     for (const id of this.order) {
       if (available <= 0) break;
@@ -207,14 +253,23 @@ class JobManager extends EventEmitter {
       return;
     }
     this.processes.set(job.id, child);
+    child.stdin?.on('error', () => this._forceStop(job.id, child));
 
     const progress = createProgressParser((block) => {
+      if (TERMINAL.has(job.status)) return;
       job.progress = block;
       job.updatedAt = new Date().toISOString();
       this._changed(job, 'progress', false);
     });
     let stderrCarry = '';
-    child.stdout.on('data', (chunk) => progress.push(chunk));
+    child.stdout.on('data', (chunk) => {
+      try {
+        progress.push(chunk);
+      } catch (error) {
+        this._stopReasons.set(job.id, { status: 'failed', error: `FFmpeg progress output was invalid: ${error.message}` });
+        this._forceStop(job.id, child);
+      }
+    });
     child.stderr.on('data', (chunk) => {
       stderrCarry += chunk.toString('utf8');
       if (stderrCarry.length > MAX_LOG_LENGTH * 4) stderrCarry = stderrCarry.slice(-MAX_LOG_LENGTH * 4);
@@ -223,19 +278,23 @@ class JobManager extends EventEmitter {
       lines.forEach((line) => this._appendLog(job, line));
     });
     child.once('error', (error) => {
+      const requested = this._takeStopReason(job.id);
       this.processes.delete(job.id);
-      this._finish(job, job.cancelRequested ? 'cancelled' : 'failed', null, null, error.message);
+      this._finish(job, requested?.status || (job.cancelRequested ? 'cancelled' : 'failed'), null, null, requested?.error || error.message);
       this._schedule();
     });
     child.once('close', (code, signal) => {
       if (this.processes.get(job.id) !== child) return;
       this.processes.delete(job.id);
-      progress.end();
+      let progressError = null;
+      try { progress.end(); } catch (error) { progressError = `FFmpeg progress output was invalid: ${error.message}`; }
       if (stderrCarry) this._appendLog(job, stderrCarry);
-      const status = job.cancelRequested ? 'cancelled' : code === 0 ? 'completed' : 'failed';
-      let finalStatus = status;
-      let error = status === 'failed' ? `FFmpeg exited with code ${code}${signal ? ` (${signal})` : ''}.` : null;
-      if (status === 'completed') {
+      const requested = this._takeStopReason(job.id);
+      let finalStatus = requested?.status || (job.cancelRequested ? 'cancelled' : code === 0 ? 'completed' : 'failed');
+      let error = requested?.error || progressError || (finalStatus === 'failed'
+        ? `FFmpeg exited with code ${code}${signal ? ` (${signal})` : ''}.`
+        : null);
+      if (finalStatus === 'completed') {
         job.outputValidation = validateOutputs(job.outputPaths);
         if (!job.outputValidation.valid) {
           finalStatus = 'failed';
@@ -245,6 +304,45 @@ class JobManager extends EventEmitter {
       this._finish(job, finalStatus, code, signal, error);
       this._schedule();
     });
+  }
+
+  async _requestGracefulStop(job, child, { resumePaused, keepAlive }) {
+    if (this.processes.get(job.id) !== child) return;
+    if (resumePaused && child.pid) {
+      try {
+        await setWindowsProcessSuspended(child.pid, false);
+      } catch (error) {
+        const requested = this._stopReasons.get(job.id);
+        if (requested && !requested.error) requested.error = `FFmpeg could not be resumed before stopping: ${error.message}`;
+        this._forceStop(job.id, child);
+        return;
+      }
+    }
+    if (this.processes.get(job.id) !== child) return;
+    try {
+      if (child.stdin && !child.stdin.destroyed && child.stdin.writable) child.stdin.end('q\n');
+      else this._forceStop(job.id, child);
+    } catch (_) {
+      this._forceStop(job.id, child);
+    }
+    if (this.processes.get(job.id) !== child || this._stopTimers.has(job.id)) return;
+    const timer = setTimeout(() => this._forceStop(job.id, child), CANCEL_GRACE_MS);
+    if (!keepAlive) timer.unref?.();
+    this._stopTimers.set(job.id, timer);
+  }
+
+  _forceStop(id, child) {
+    if (this.processes.get(id) !== child) return;
+    try { child.kill('SIGKILL'); } catch (_) { /* The exact child already exited. */ }
+  }
+
+  _takeStopReason(id) {
+    const timer = this._stopTimers.get(id);
+    if (timer) clearTimeout(timer);
+    this._stopTimers.delete(id);
+    const requested = this._stopReasons.get(id) || null;
+    this._stopReasons.delete(id);
+    return requested;
   }
 
   _appendLog(job, line) {
@@ -264,8 +362,8 @@ class JobManager extends EventEmitter {
     job.finishedAt = now;
     job.updatedAt = now;
     job.cancelRequested = false;
-    this._changed(job, status, true);
     this._trimHistory();
+    this._changed(job, status, true);
   }
 
   _changed(job, type, immediate) {
@@ -319,10 +417,13 @@ class JobManager extends EventEmitter {
       if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.jobs) || parsed.jobs.length > MAX_JOBS) {
         throw new Error('Unsupported queue state.');
       }
+      const seen = new Set();
       for (const candidate of parsed.jobs) {
         if (!isStoredJob(candidate)) continue;
-        const job = { ...candidate, progress: { ...(candidate.progress || {}) }, logs: candidate.logs.slice(-MAX_LOG_LINES) };
-        if (job.status === 'running' || job.status === 'paused') {
+        if (seen.has(candidate.id)) continue;
+        seen.add(candidate.id);
+        const job = sanitizeStoredJob(candidate);
+        if (job.status === 'running' || job.status === 'paused' || job.status === 'cancelling' || job.status === 'stopping') {
           job.status = 'interrupted';
           job.finishedAt = new Date().toISOString();
           job.updatedAt = job.finishedAt;
@@ -362,12 +463,20 @@ class JobManager extends EventEmitter {
       savedAt: new Date().toISOString(),
       jobs: this.order.map((id) => this.jobs.get(id)).filter(Boolean)
     });
-    fs.writeFileSync(temporary, body, { encoding: 'utf8', mode: 0o600 });
+    let descriptor;
     try {
+      descriptor = fs.openSync(temporary, 'wx', 0o600);
+      fs.writeFileSync(descriptor, body, { encoding: 'utf8' });
+      fs.fsyncSync(descriptor);
+      fs.closeSync(descriptor);
+      descriptor = undefined;
       fs.renameSync(temporary, this.stateFile);
     } catch (error) {
-      try { fs.rmSync(this.stateFile, { force: true }); fs.renameSync(temporary, this.stateFile); }
-      catch (_) { try { fs.rmSync(temporary, { force: true }); } catch (_) { /* Best effort cleanup. */ } throw error; }
+      if (descriptor !== undefined) {
+        try { fs.closeSync(descriptor); } catch (_) { /* The descriptor is already closed. */ }
+      }
+      try { fs.rmSync(temporary, { force: true }); } catch (_) { /* Keep the previous state file intact. */ }
+      throw error;
     }
   }
 }
@@ -381,25 +490,163 @@ function normalizeLabel(value) {
 }
 
 function isStoredJob(job) {
-  return Boolean(job && typeof job === 'object' && /^[0-9a-f-]{36}$/i.test(job.id) &&
-    STATUSES.has(job.status) && Array.isArray(job.args) && job.args.length <= 261 && Array.isArray(job.outputPaths || []) &&
-    job.args.every((arg) => typeof arg === 'string' && arg.length <= 8192) &&
-    Array.isArray(job.logs));
+  try {
+    sanitizeStoredJob(job);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function sanitizeStoredJob(job) {
+  if (!job || typeof job !== 'object' || Array.isArray(job) || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(job.id)) {
+    throw new TypeError('Stored job id is invalid.');
+  }
+  if (!STATUSES.has(job.status)) throw new TypeError('Stored job status is invalid.');
+  const label = normalizeLabel(job.label);
+  if (!Array.isArray(job.args) || job.args.length < 6 || job.args.length > 261 ||
+    job.args.some((arg) => typeof arg !== 'string' || !arg || arg.length > 8192 || /[\0\r\n]/u.test(arg)) ||
+    job.args[0] !== '-hide_banner' || job.args[1] !== '-progress' || job.args[2] !== 'pipe:1' ||
+    job.args[3] !== '-stats_period' || job.args[4] !== '0.25') {
+    throw new TypeError('Stored job arguments are invalid.');
+  }
+  if (!Array.isArray(job.outputPaths) || job.outputPaths.length > MAX_OUTPUT_PATHS ||
+    job.outputPaths.some((entry) => typeof entry !== 'string' || !path.isAbsolute(entry) ||
+      entry.length > 8192 || /[\0\r\n]/u.test(entry))) {
+    throw new TypeError('Stored job outputs are invalid.');
+  }
+  if (!Array.isArray(job.logs) || job.logs.some((line) => typeof line !== 'string')) {
+    throw new TypeError('Stored job logs are invalid.');
+  }
+  const timestamps = ['createdAt', 'updatedAt', 'startedAt', 'finishedAt'];
+  if (timestamps.some((key) => job[key] !== null && !isIsoTimestamp(job[key]))) {
+    throw new TypeError('Stored job timestamps are invalid.');
+  }
+  if (job.exitCode !== null && !Number.isInteger(job.exitCode)) throw new TypeError('Stored job exit code is invalid.');
+  if (job.signal !== null && (typeof job.signal !== 'string' || job.signal.length > 80)) throw new TypeError('Stored job signal is invalid.');
+  if (job.error !== null && (typeof job.error !== 'string' || job.error.length > MAX_LOG_LENGTH)) throw new TypeError('Stored job error is invalid.');
+  if (typeof job.cancelRequested !== 'boolean') throw new TypeError('Stored job cancellation state is invalid.');
+
+  return {
+    id: job.id,
+    label,
+    status: job.status,
+    args: [...job.args],
+    outputPaths: [...new Set(job.outputPaths.map((entry) => path.normalize(entry)))],
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    exitCode: job.exitCode,
+    signal: job.signal,
+    progress: sanitizeProgress(job.progress),
+    logs: job.logs.slice(-MAX_LOG_LINES).map((line) => line.slice(0, MAX_LOG_LENGTH)),
+    error: job.error,
+    outputValidation: sanitizeOutputValidation(job.outputValidation),
+    cancelRequested: job.cancelRequested
+  };
+}
+
+function sanitizeProgress(value) {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) throw new TypeError('Stored progress is invalid.');
+  const output = {};
+  const entries = Object.entries(value);
+  if (entries.length > 129) throw new TypeError('Stored progress has too many fields.');
+  for (const [key, entry] of entries) {
+    if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(key) && key !== 'raw') continue;
+    if (key === 'raw') {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry) || Object.keys(entry).length > 128) continue;
+      output.raw = {};
+      for (const [rawKey, rawValue] of Object.entries(entry)) {
+        if (/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u.test(rawKey) && typeof rawValue === 'string') {
+          output.raw[rawKey] = rawValue.slice(0, 4096);
+        }
+      }
+    } else if (typeof entry === 'string') output[key] = entry.slice(0, 4096);
+    else if (typeof entry === 'number' && Number.isFinite(entry)) output[key] = entry;
+  }
+  return output;
+}
+
+function sanitizeOutputValidation(value) {
+  if (value === undefined || value === null) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.valid !== 'boolean' ||
+    (value.mode !== 'stream' && value.mode !== 'files') || !Array.isArray(value.outputs) ||
+    value.outputs.length > MAX_VALIDATED_OUTPUTS || (value.error !== null && typeof value.error !== 'string')) {
+    throw new TypeError('Stored output validation is invalid.');
+  }
+  return {
+    valid: value.valid,
+    mode: value.mode,
+    outputs: value.outputs.map((output) => {
+      if (!output || typeof output.name !== 'string' || output.name.length > 255 ||
+        !Number.isSafeInteger(output.bytes) || output.bytes < 0) throw new TypeError('Stored output metadata is invalid.');
+      return { name: output.name, bytes: output.bytes };
+    }),
+    error: value.error === null ? null : value.error.slice(0, MAX_LOG_LENGTH)
+  };
+}
+
+function isIsoTimestamp(value) {
+  return typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value));
 }
 
 function validateOutputs(outputPaths) {
   if (!outputPaths.length) return { valid: true, mode: 'stream', outputs: [], error: null };
   const outputs = [];
   try {
-    for (const outputPath of outputPaths) {
-      const stats = fs.statSync(outputPath);
-      if (!stats.isFile() || stats.size < 1) throw new Error(`Expected output is missing or empty: ${path.basename(outputPath)}`);
-      outputs.push({ name: path.basename(outputPath), bytes: stats.size });
+    for (const outputPath of [...new Set(outputPaths)]) {
+      const pattern = outputPattern(outputPath);
+      if (!pattern) {
+        const stats = fs.statSync(outputPath);
+        if (!stats.isFile() || stats.size < 1) throw new Error(`Expected output is missing or empty: ${path.basename(outputPath)}`);
+        outputs.push({ name: path.basename(outputPath), bytes: stats.size });
+        continue;
+      }
+      const directory = path.dirname(outputPath);
+      const entries = fs.readdirSync(directory, { withFileTypes: true });
+      if (entries.length > MAX_OUTPUT_DIRECTORY_ENTRIES) {
+        throw new Error(`The output directory contains more than ${MAX_OUTPUT_DIRECTORY_ENTRIES} entries and cannot be validated safely.`);
+      }
+      const matches = entries.filter((entry) => entry.isFile() && pattern.test(entry.name));
+      if (!matches.length) throw new Error(`Expected output pattern produced no files: ${path.basename(outputPath)}`);
+      let totalBytes = 0;
+      for (const entry of matches) {
+        const stats = fs.statSync(path.join(directory, entry.name));
+        if (!stats.isFile() || stats.size < 1) throw new Error(`Expected output is empty: ${entry.name}`);
+        totalBytes += stats.size;
+        if (outputs.length < MAX_VALIDATED_OUTPUTS) outputs.push({ name: entry.name, bytes: stats.size });
+      }
+      if (outputs.length >= MAX_VALIDATED_OUTPUTS) {
+        outputs.length = Math.min(outputs.length, MAX_VALIDATED_OUTPUTS - 1);
+        outputs.push({
+          name: `${path.basename(outputPath).slice(0, 220)} (${matches.length} files)`,
+          bytes: totalBytes
+        });
+      }
     }
     return { valid: true, mode: 'files', outputs, error: null };
   } catch (error) {
     return { valid: false, mode: 'files', outputs, error: error.message };
   }
+}
+
+function outputPattern(outputPath) {
+  const name = path.basename(outputPath);
+  if (!/%(?:0?\d+)?d|%v/u.test(name)) return null;
+  let source = '';
+  for (let index = 0; index < name.length;) {
+    const token = name.slice(index).match(/^%(?:0?\d+)?d|^%v/u);
+    if (token) {
+      source += token[0].endsWith('d') ? '\\d+' : '[A-Za-z0-9_-]+';
+      index += token[0].length;
+      continue;
+    }
+    source += name[index].replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    index += 1;
+  }
+  return new RegExp(`^${source}$`, 'u');
 }
 
 function setWindowsProcessSuspended(pid, suspended) {

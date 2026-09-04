@@ -7,7 +7,9 @@
     { "id": "delivery", "label": "Build and release" },
     { "id": "core", "label": "Website core" },
     { "id": "features", "label": "Website features" },
-    { "id": "media-ai", "label": "Converter and local AI" }
+    { "id": "media-ai", "label": "Converter and local AI" },
+    { "id": "app", "label": "Desktop application features" },
+    { "id": "site", "label": "Website boundaries and status" }
   ],
   "articles": [
     {
@@ -219,6 +221,27 @@
       "category": "media-ai",
       "path": "articles/media-ai/README.md",
       "summary": "Browser-local file conversion and loopback-only Ollama management with honest capability boundaries."
+    },
+    {
+      "id": "app-desktop-interface-controls",
+      "title": "Desktop interface controls",
+      "category": "app",
+      "path": "articles/app/desktop-interface-controls.md",
+      "summary": "Implemented desktop tabs, palette, regex, notifications, appearance, logo, confirmation, and offline-docs surfaces with honest evidence boundaries."
+    },
+    {
+      "id": "site-runtime-boundaries",
+      "title": "Website runtime boundaries",
+      "category": "site",
+      "path": "articles/site/site-runtime-boundaries.md",
+      "summary": "Browser-local website equivalents and the native runtime capabilities that remain unavailable on Pages."
+    },
+    {
+      "id": "site-link-preview-and-status",
+      "title": "Link preview and status evidence",
+      "category": "site",
+      "path": "articles/site/link-preview-and-status.md",
+      "summary": "Static social metadata, status cards, pending installer evidence, and the unrun repository preview-setting boundary."
     }
   ]
 }
